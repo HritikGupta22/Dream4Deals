@@ -58,3 +58,36 @@ export interface Event {
   type: string;
   detail: string;
 }
+
+export interface Dashboard {
+  totalReels:  number;
+  totalClicks: number;
+  topProduct:  string | null;
+  topPlatform: string | null;
+  estRevenue:  number;
+}
+
+export interface Platform {
+  id: number;
+  name: string;
+}
+
+export interface Offer {
+  id: number;
+  platform: string;
+  platform_id: number;
+  seller: string;
+  price: number;
+  delivery: string;
+  rating: string;
+  link: string;
+  available: boolean;
+}
+
+export interface AnalyticsRow { label: string; clicks: number; }
+export interface Analytics {
+  byReel:     AnalyticsRow[];
+  byPlatform: AnalyticsRow[];
+  byProduct:  AnalyticsRow[];
+  daily:      { day: string; clicks: number }[];
+}

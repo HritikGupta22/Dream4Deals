@@ -4,12 +4,14 @@
   "private": true,
   "description": "Creator-first shopping and price comparison",
   "scripts": {
-    "start": "concurrently \"npm run backend\" \"npm run frontend\"",
+    "start": "node backend/server.js",
     "dev": "concurrently \"npm run backend:dev\" \"npm run frontend:dev\"",
     "backend": "node backend/server.js",
     "backend:dev": "node --watch backend/server.js",
     "frontend": "npm --prefix frontend start",
-    "frontend:dev": "npm --prefix frontend run dev"
+    "frontend:dev": "npm --prefix frontend run dev",
+    "db:migrate": "node backend/migrate.js",
+    "db:seed": "node backend/seed.js"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"
