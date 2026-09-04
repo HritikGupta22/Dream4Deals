@@ -1,0 +1,18 @@
+@import "tailwindcss";
+
+:root {
+  --ink: #241d1d;
+  --cream: #fff9f5;
+  --coral: #e96050;
+  --muted: #716966;
+  --line: #ebdfda;
+  --dark: #291f20;
+  --font-dm: "DM Sans", sans-serif;
+  --font-playfair: "Playfair Display", serif;
+}
+
+html { scroll-behavior: smooth; }
+
+body { font-family: var(--font-dm); }
+
+.font-serif { font-family: var(--font-playfair); }

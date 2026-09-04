@@ -39,12 +39,35 @@ Clicks "Buy Now" → tracked affiliate redirect → retailer product page
 
 ```
 Dream4Deals/
-  frontend/            Public reel page + Creator Studio (HTML, CSS, JS)
-  backend/             Node.js API, local JSON store, Meta webhook handler
-  backend/data.js      Demo reel + product data
-  backend/local-store.json   Dev-only storage (replaced by PostgreSQL in Phase 2)
-  TASKS.md             This file
+  frontend/                  Next.js 15 app (App Router, TypeScript, Tailwind CSS)
+    app/
+      layout.tsx             Root layout — header, footer, fonts
+      page.tsx               Redirects / → /reel/anaya-pink-edit
+      reel/[slug]/
+        page.tsx             Server component — fetches reel data, sets metadata
+        ReelClient.tsx       Client component — product grid, comparison panel
+      studio/
+        page.tsx             Creator Studio — auth, reel mapping, product tagging, automation
+    lib/
+      api.ts                 Fetch helpers + INR formatter
+      types.ts               Shared TypeScript interfaces
+    next.config.ts           Rewrites /api/* → Express backend on :3000
+  backend/                   Node.js + Express API, local JSON store, Meta webhook handler
+    server.js                API routes: reels, offers, redirect, auth, automation, webhooks
+    data.js                  Demo reel + product seed data
+    instagram.js             Meta Graph API adapters
+    store.js                 Local JSON read/write helpers
+    local-store.json         Dev-only storage (replaced by PostgreSQL in Phase 2)
+  package.json               Root scripts — runs backend + Next.js together via concurrently
+  TASKS.md                   This file
 ```
+
+**Run locally:**
+```bash
+npm install          # install concurrently at root
+npm run dev          # starts backend on :3000 + Next.js on :3001 with hot reload
+```
+Open `http://localhost:3001/reel/anaya-pink-edit`
 
 **Local dev storage:** `backend/local-store.json` — suitable for development only.
 
@@ -73,13 +96,26 @@ Dream4Deals/
 
 **Goal:** a working public reel page and a Creator Studio for managing content locally.
 
+### Frontend — Next.js
+
+- [x] Migrate frontend from static HTML/JS to Next.js 15 (App Router, TypeScript, Tailwind CSS)
+- [x] Server component reel page `/reel/[slug]` — SSR fetch + dynamic metadata
+- [x] Client component for product grid and comparison panel interactions
+- [x] Creator Studio at `/studio` — full client component
+- [x] API proxy via `next.config.ts` rewrites (`/api/*` → Express on `:3000`)
+- [x] Shared `lib/api.ts` fetch helpers and `lib/types.ts` TypeScript interfaces
+- [x] Root `package.json` runs backend + Next.js together via `concurrently`
+- [ ] Edit product form — update name, image, category, price for an existing product
+- [ ] Reel poster/video upload — store file locally; display on reel page
+- [ ] Manual QA pass: reel page, comparison table, and Creator Studio on mobile and desktop
+
 ### Public Reel Page
 
-- [x] Serve unique public route `/reel/:slug`
-- [x] Display creator identity (name, handle, avatar)
+- [x] Serve unique public route `/reel/[slug]`
+- [x] Display creator identity (name, handle, followers)
 - [x] Display reel title, caption, and poster/video slot
 - [x] Display all products tagged to the reel
-- [x] Display platform comparison table per product (Amazon, Flipkart, Myntra, Meesho, etc.)
+- [x] Display platform comparison panel per product (Amazon, Flipkart, Myntra, Meesho, etc.)
 - [x] Display multiple sellers per platform with price, delivery, and seller rating
 - [x] Highlight the lowest valid price automatically
 - [x] "Buy Now" button sends visitor through tracked redirect endpoint `/api/redirect`
@@ -91,19 +127,15 @@ Dream4Deals/
 - [x] Creator login API — verify password, return session token
 - [x] Auth middleware — require valid session token on all creator-only endpoints
 
-### Creator Studio UI
+### Creator Studio UI (`/studio`)
 
-- [x] Register / Sign In tabs with validation messages and loading states
+- [x] Register / Sign In tabs with validation messages
 - [x] Profile edit form (display name, Instagram handle, bio)
 - [x] Reel mapping form — enter Instagram media ID, title, and URL slug
-- [x] Reel mapping list — view all mapped reels
+- [x] Reel mapping list with delete controls
 - [x] Product tagging form — add product (name, image URL, category, reference price)
-- [x] Delete product from reel
 - [x] Delete reel mapping
-- [x] Error and loading states on every form
-- [ ] Edit product form — update name, image, category, price for an existing product
-- [ ] Reel poster/video upload — store file locally; display on reel page
-- [ ] Manual QA pass: reel page, comparison table, and Creator Studio on mobile and desktop
+- [x] Error states on every form
 
 **Acceptance:** creator signs in → maps a reel → tags products → visitor opens reel URL → compares prices → follows Buy Now redirect. Core flow verified locally 2026-09-04.
 
@@ -287,7 +319,7 @@ Dream4Deals/
 | Phase | Description | Status |
 |-------|-------------|--------|
 | 0 | Project Foundation | 🟡 Mostly done |
-| 1 | Creator Reel Website MVP | 🟡 Core done, 3 items open |
+| 1 | Creator Reel Website MVP (Next.js) | 🟡 Core done, 3 items open |
 | 2 | Persistent Data and Real Commerce | 🔴 Not started |
 | 3 | Instagram / Meta Automation | 🟡 Dev layer done, live setup pending |
 | 4 | Creator Dashboard and Analytics | 🔴 Not started |
@@ -297,7 +329,7 @@ Dream4Deals/
 
 ## Immediate Next Steps
 
-1. Run locally: `npm start` → open `http://localhost:3000/reel/anaya-pink-edit`
+1. Run locally: `npm run dev` → open `http://localhost:3001/reel/anaya-pink-edit`
 2. In Creator Studio: register a creator account → map a reel → tag products → verify Buy Now redirect
 3. Complete the 3 open Phase 1 items (product edit form, video upload, mobile QA)
 4. Start Phase 2: set up PostgreSQL and migrate off `local-store.json`

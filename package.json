@@ -1,10 +1,17 @@
 {
   "name": "dream4deals",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
-  "description": "Creator-first shopping and price comparison MVP",
+  "description": "Creator-first shopping and price comparison",
   "scripts": {
-    "start": "node backend/server.js",
-    "dev": "node --watch backend/server.js"
+    "start": "concurrently \"npm run backend\" \"npm run frontend\"",
+    "dev": "concurrently \"npm run backend:dev\" \"npm run frontend:dev\"",
+    "backend": "node backend/server.js",
+    "backend:dev": "node --watch backend/server.js",
+    "frontend": "npm --prefix frontend start",
+    "frontend:dev": "npm --prefix frontend run dev"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
   }
 }
