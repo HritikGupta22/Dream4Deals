@@ -31,7 +31,7 @@ export default function ReelClient({ reel }: { reel: Reel }) {
     <main>
       {/* Hero */}
       <section className="grid md:grid-cols-2 min-h-[600px]">
-        <div className="relative overflow-hidden bg-[#e8c7c4]">
+        <div className="relative overflow-hidden bg-[#e8c7c4] min-h-[440px] md:min-h-[600px]">
           <Image
             src={reel.poster || "/placeholder.jpg"}
             alt={reel.title}
@@ -43,13 +43,13 @@ export default function ReelClient({ reel }: { reel: Reel }) {
           <i className="not-italic absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[60px] h-[60px] bg-white/90 rounded-full flex items-center justify-center text-xl pl-1">▶</i>
           <small className="absolute bottom-6 left-7 text-white text-[11px] z-10">◉ Original Reel</small>
         </div>
-        <div className="px-[13%] py-[100px]">
+        <div className="px-[8%] py-[60px] md:px-[13%] md:py-[100px]">
           <div className="border-b border-[#ebdfda] pb-4 mb-11">
             <b className="block text-[13px]">{reel.creator.name}</b>
             <small className="block text-[11px] text-[#716966] mt-1">{reel.creator.handle} · {reel.creator.followers}</small>
           </div>
           <p className="text-[11px] font-bold tracking-[1.5px] text-[#e96050] mb-3">THE EDIT</p>
-          <h1 className="font-serif text-[53px] leading-[1.08] tracking-[-1.5px] m-0">{reel.title}</h1>
+          <h1 className="font-serif text-[40px] md:text-[53px] leading-[1.08] tracking-[-1.5px] m-0">{reel.title}</h1>
           <p className="text-[#716966] leading-relaxed max-w-[370px] my-6">
             Every piece from this look, all in one place — with the best price shown first.
           </p>
@@ -67,7 +67,7 @@ export default function ReelClient({ reel }: { reel: Reel }) {
         <p className="text-[11px] font-bold tracking-[1.5px] text-[#e96050] mb-3">SHOP THE LOOK</p>
         <h2 className="font-serif text-[40px] tracking-[-1.5px] m-0">Tagged in this reel</h2>
         <p className="text-[#716966] text-[13px] mt-2 mb-8">Tap an item to compare prices and sellers across trusted stores.</p>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6">
           {reel.products.map((p) => (
             <article
               key={p.id}
@@ -90,7 +90,7 @@ export default function ReelClient({ reel }: { reel: Reel }) {
 
       {/* Comparison panel */}
       {selected && (
-        <section id="comparison" className="px-[10vw] py-[65px] bg-[#fff0eb] grid md:grid-cols-[290px_1fr] gap-[52px] relative">
+        <section id="comparison" className="px-[5vw] md:px-[10vw] py-[65px] bg-[#fff0eb] grid md:grid-cols-[290px_1fr] gap-[30px] md:gap-[52px] relative">
           <button
             onClick={() => setSelected(null)}
             className="absolute right-6 top-4 border-0 bg-transparent text-[30px] cursor-pointer"

@@ -105,9 +105,9 @@ Open `http://localhost:3001/reel/anaya-pink-edit`
 - [x] API proxy via `next.config.ts` rewrites (`/api/*` → Express on `:3000`)
 - [x] Shared `lib/api.ts` fetch helpers and `lib/types.ts` TypeScript interfaces
 - [x] Root `package.json` runs backend + Next.js together via `concurrently`
-- [ ] Edit product form — update name, image, category, price for an existing product
-- [ ] Reel poster/video upload — store file locally; display on reel page
-- [ ] Manual QA pass: reel page, comparison table, and Creator Studio on mobile and desktop
+- [x] Edit product form — update name, image, category, price for an existing product
+- [x] Reel poster/video upload — upload file locally; displayed on reel page
+- [x] Manual QA pass: mobile responsive fixes applied to reel page, comparison panel, and Creator Studio
 
 ### Public Reel Page
 
@@ -319,7 +319,7 @@ Open `http://localhost:3001/reel/anaya-pink-edit`
 | Phase | Description | Status |
 |-------|-------------|--------|
 | 0 | Project Foundation | 🟡 Mostly done |
-| 1 | Creator Reel Website MVP (Next.js) | 🟡 Core done, 3 items open |
+| 1 | Creator Reel Website MVP (Next.js) | ✅ Complete |
 | 2 | Persistent Data and Real Commerce | 🔴 Not started |
 | 3 | Instagram / Meta Automation | 🟡 Dev layer done, live setup pending |
 | 4 | Creator Dashboard and Analytics | 🔴 Not started |
@@ -329,10 +329,9 @@ Open `http://localhost:3001/reel/anaya-pink-edit`
 
 ## Immediate Next Steps
 
-1. Run locally: `npm run dev` → open `http://localhost:3001/reel/anaya-pink-edit`
+1. Run locally: `npm run dev` → open `http://localhost:3001/reel/dress-pink-edit`
 2. In Creator Studio: register a creator account → map a reel → tag products → verify Buy Now redirect
-3. Complete the 3 open Phase 1 items (product edit form, video upload, mobile QA)
-4. Start Phase 2: set up PostgreSQL and migrate off `local-store.json`
+3. Phase 1 is complete ✅ — start Phase 2: set up PostgreSQL and migrate off `local-store.json`
 5. For live Instagram automation: complete all Phase 3 Meta app and permission-review steps before sending any real messages
 
 > **Do not** add Instagram passwords, use browser automation, or scrape Instagram. All automation must go through the official Meta Graph API after app review approval.
