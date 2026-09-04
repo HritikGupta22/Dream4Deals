@@ -1,6 +1,6 @@
 const reels = [
   {
-    slug: 'anaya-pink-edit', instagramMediaId: '178923456',
+    slug: 'dress-pink-edit', instagramMediaId: '178923456',
     creator: { name: 'Dream4Deals', handle: '@dream4deal', followers: 'Instagram creator' },
     title: 'The pink outfit you asked for', caption: 'All outfit links are below. Compare before you buy âœ¨',
     poster: 'https://images.unsplash.com/photo-1539109136881-3be0616acf4b?auto=format&fit=crop&w=1100&q=85', videoUrl: '',

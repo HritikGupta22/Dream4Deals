@@ -10,7 +10,7 @@ const {
   matchesTrigger,
   applyTemplate,
   collectIncoming,
-  sendCommentReply,
+  sendPublicCommentReply,
   sendDirectMessage,
 } = require('./instagram');
 const store = require('./store');
@@ -119,7 +119,7 @@ async function handleJob(job) {
 
   if (job.senderId) store.rememberUserReel(job.senderId, reel.slug);
 
-  const message = applyTemplate(settings.replyTemplate, {
+  const dmMessage = applyTemplate(settings.replyTemplate, {
     name: job.username,
     url: reelUrl(reel.slug),
     title: reel.title,
@@ -130,23 +130,36 @@ async function handleJob(job) {
       store.logEvent('Reply skipped', 'Meta event did not include a comment ID');
       return;
     }
-    const result = await sendCommentReply(job.commentId, message);
+    // Step 1 — public comment reply (visible to everyone, no link)
+    try {
+      await sendPublicCommentReply(job.commentId, 'Link has been sent to your DM! 📩');
+      store.logEvent('Comment public reply sent', reel.slug);
+    } catch (err) {
+      store.logEvent('Comment public reply failed', err.message);
+    }
+    // Step 2 — send the actual link privately via DM
+    if (!job.senderId) {
+      store.logEvent('DM skipped', 'No sender ID on comment event');
+      return;
+    }
+    const dmResult = await sendDirectMessage(job.senderId, dmMessage);
     store.logEvent(
-      result.sent ? 'Comment private reply sent' : 'Comment reply queued',
-      result.sent ? reel.slug : result.reason
+      dmResult.sent ? 'DM sent after comment' : 'DM queued for setup',
+      dmResult.sent ? reel.slug : dmResult.reason
     );
     return;
   }
 
+  // Plain DM trigger — send the link directly
   if (!job.senderId) {
     store.logEvent('DM skipped', 'Meta event did not include a sender ID');
     return;
   }
 
-  const result = await sendDirectMessage(job.senderId, message);
+  const dmResult = await sendDirectMessage(job.senderId, dmMessage);
   store.logEvent(
-    result.sent ? 'Instagram DM sent' : 'DM queued for setup',
-    result.sent ? reel.slug : result.reason
+    dmResult.sent ? 'Instagram DM sent' : 'DM queued for setup',
+    dmResult.sent ? reel.slug : dmResult.reason
   );
 }
 
@@ -352,5 +365,5 @@ http
   })
   .listen(PORT, () => {
     console.log(`Dream4Deals running at http://localhost:${PORT}`);
-    console.log(`Sample reel: http://localhost:${PORT}/reel/anaya-pink-edit`);
+    console.log(`Sample reel: http://localhost:${PORT}/reel/dress-pink-edit`);
   });

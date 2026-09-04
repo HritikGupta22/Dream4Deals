@@ -10,7 +10,7 @@ Creator-first shopping layer for Instagram fashion content:
 npm start
 ```
 
-Open `http://localhost:3000/reel/anaya-pink-edit`. Track work in `TASKS.md`.
+Open `http://localhost:3001/reel/dress-pink-edit`.
 
 ## Folder structure
 

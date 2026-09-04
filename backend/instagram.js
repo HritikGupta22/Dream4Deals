@@ -116,10 +116,23 @@ async function graphMessage(recipient, message) {
   return { sent: true, data };
 }
 
-function sendCommentReply(commentId, message) {
-  return graphMessage({ comment_id: commentId }, message);
+// Public reply on the comment itself (visible to everyone)
+async function sendPublicCommentReply(commentId, message) {
+  const token = process.env.META_ACCESS_TOKEN;
+  const version = process.env.META_GRAPH_API_VERSION || 'v22.0';
+  if (!token) return { sent: false, reason: 'Meta credentials are not configured' };
+
+  const response = await fetch(`https://graph.facebook.com/${version}/${commentId}/replies`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, access_token: token }),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data?.error?.message || 'Meta rejected the comment reply');
+  return { sent: true, data };
 }
 
+// Private DM to a user by their Instagram-scoped sender ID
 function sendDirectMessage(senderId, message) {
   return graphMessage({ id: senderId }, message);
 }
@@ -129,6 +142,6 @@ module.exports = {
   matchesTrigger,
   applyTemplate,
   collectIncoming,
-  sendCommentReply,
+  sendPublicCommentReply,
   sendDirectMessage,
 };

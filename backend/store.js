@@ -9,8 +9,8 @@ const defaultSettings = {
   replyComments: true,
   replyDms: true,
   triggers: ['link', 'link please', 'price', 'details', 'buy'],
-  replyTemplate: 'Sure ÃƒÂ¢Ã‚ÂÃ‚Â¤ÃƒÂ¯Ã‚Â¸Ã‚Â Here is the link: {{url}}',
-  fallbackSlug: 'anaya-pink-edit',
+  replyTemplate: 'Hey{{name}}! Here are the shopping links from this reel: {{url}} 🛍️',
+  fallbackSlug: 'dress-pink-edit',
 };
 
 function readStore() {
