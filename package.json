@@ -1,0 +1,10 @@
+{
+  "name": "dream4deals",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Creator-first shopping and price comparison MVP",
+  "scripts": {
+    "start": "node backend/server.js",
+    "dev": "node --watch backend/server.js"
+  }
+}
