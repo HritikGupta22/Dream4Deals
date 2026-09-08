@@ -12,7 +12,9 @@
   "description": "",
   "dependencies": {
     "dotenv": "^17.4.2",
-    "pg": "^8.23.0"
+    "pg": "^8.23.0",
+    "mailgun.js": "^9.1.0",
+    "form-data": "^4.0.0"
   },
   "devDependencies": {
     "@types/pg": "^8.23.1"

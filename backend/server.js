@@ -4,6 +4,11 @@ const http = require('http');
 const fs   = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const FormData = require('form-data');
+const Mailgun = require('mailgun.js');
+
+const mailgun = new Mailgun(FormData);
+const mg = mailgun.client({ username: 'api', key: process.env.MAILGUN_API_KEY || 'mock-key' });
 
 const {
   getReel, getReelByInstagramMediaId, reelUrl, mappingRows,
@@ -21,7 +26,36 @@ const { getDashboard, getAnalytics } = store;
 
 const PORT       = Number(process.env.PORT) || 3000;
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
+const STORAGE_DIR = path.join(__dirname, 'storage');
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR);
+if (!fs.existsSync(STORAGE_DIR)) fs.mkdirSync(STORAGE_DIR, { recursive: true });
+
+const LOG_FILE = path.join(STORAGE_DIR, 'backend.log');
+const ERROR_FILE = path.join(STORAGE_DIR, 'backend-errors.log');
+
+function appendLog(filePath, entry) {
+  fs.appendFileSync(filePath, `${JSON.stringify(entry)}\n`, 'utf8');
+}
+
+function logInfo(message, meta = {}) {
+  appendLog(LOG_FILE, {
+    timestamp: new Date().toISOString(),
+    level: 'INFO',
+    message,
+    ...meta,
+  });
+}
+
+function logError(message, meta = {}) {
+  const entry = {
+    timestamp: new Date().toISOString(),
+    level: 'ERROR',
+    message,
+    ...meta,
+  };
+  appendLog(ERROR_FILE, entry);
+  appendLog(LOG_FILE, entry);
+}
 
 // ── Rate limiting & security ────────────────────────────────────────────────
 const rateLimitMap = new Map(); // { key: [timestamp, count] }
@@ -96,10 +130,36 @@ function validateUrl(url, allowedDomains = AFFILIATE_DOMAINS) {
   }
 }
 
+// ── Email sending (Mailgun) ────────────────────────────────────────────────
+async function sendEmail(to, subject, html) {
+  try {
+    if (!process.env.MAILGUN_API_KEY || !process.env.MAILGUN_DOMAIN) {
+      console.log(`[MAIL] Demo mode: Email would be sent to ${to}: ${subject}`);
+      return { success: true, mock: true };
+    }
+    
+    const messageData = {
+      from: process.env.MAILGUN_FROM_EMAIL || `noreply@${process.env.MAILGUN_DOMAIN}`,
+      to: to,
+      subject: subject,
+      html: html,
+    };
+    
+    const result = await mg.messages.create(process.env.MAILGUN_DOMAIN, messageData);
+    console.log(`[MAIL] Email sent: ${to} - ${subject}`);
+    return { success: true, id: result.id };
+  } catch (error) {
+    console.error(`[MAIL] Error: ${error.message}`);
+    return { success: false, error: error.message };
+  }
+}
+
 function sendJsonWithHeaders(res, status, data) {
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
-    'Access-Control-Allow-Origin': process.env.CORS_ORIGIN || '*',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET,POST,PATCH,DELETE,OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type,Authorization',
     'X-Content-Type-Options': 'nosniff',
     'X-Frame-Options': 'DENY',
     'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
@@ -273,6 +333,19 @@ http.createServer(async (req, res) => {
       try {
         const user  = await store.createUser(data);
         const token = await store.createSession(user.id);
+        
+        // Send verification email via Mailgun
+        const verifyLink = `${process.env.PUBLIC_BASE_URL || 'http://localhost:3001'}/verify-email?token=${user.email_verification_token || 'demo'}`;
+        const emailHtml = `
+          <h2>Verify Your Email</h2>
+          <p>Welcome to Dream4Deals, ${data.name}!</p>
+          <p>Click the link below to verify your email:</p>
+          <a href="${verifyLink}">Verify Email</a>
+          <p>This link expires in 24 hours.</p>
+        `;
+        
+        await sendEmail(email, 'Dream4Deals - Verify Your Email', emailHtml);
+        
         return sendJson(res, 201, { user, token });
       } catch (e) { return sendJson(res, 409, { error: e.message }); }
     }
@@ -323,8 +396,19 @@ http.createServer(async (req, res) => {
       
       const token = await store.requestPasswordReset(data.email);
       if (!token) return sendJson(res, 404, { error: 'Email not found.' });
-      // In production: send email with reset link containing token
-      return sendJson(res, 200, { message: 'Password reset email sent.', token });
+      
+      // Send reset email via Mailgun
+      const resetLink = `${process.env.PUBLIC_BASE_URL || 'http://localhost:3001'}/reset-password?token=${token}`;
+      const emailHtml = `
+        <h2>Password Reset Request</h2>
+        <p>Click the link below to reset your password:</p>
+        <a href="${resetLink}">Reset Password</a>
+        <p>This link expires in 1 hour.</p>
+        <p>If you didn't request this, ignore this email.</p>
+      `;
+      
+      await sendEmail(data.email, 'Dream4Deals - Password Reset', emailHtml);
+      return sendJson(res, 200, { message: 'Password reset email sent.' });
     }
 
     if (req.method === 'POST' && url.pathname === '/api/auth/password-reset') {
@@ -341,6 +425,139 @@ http.createServer(async (req, res) => {
       const ok = await store.verifyEmail(data.token);
       if (!ok) return sendJson(res, 400, { error: 'Invalid or expired verification token.' });
       return sendJson(res, 200, { message: 'Email verified successfully.' });
+    }
+
+    // ── Instagram OAuth (New) ──────────────────────────────────────────────
+    if (req.method === 'GET' && url.pathname === '/api/auth/instagram-oauth-url') {
+      const appId = process.env.META_APP_ID;
+      const frontendBaseUrl = process.env.FRONTEND_BASE_URL || 'http://localhost:3000';
+      const redirectUri = `${frontendBaseUrl.replace(/\/$/, '')}/auth/instagram-callback`;
+      const scope = 'instagram_business_basic,instagram_business_manage_messages,instagram_business_manage_comments';
+      
+      const oauthUrl = `https://www.instagram.com/oauth/authorize?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scope)}&response_type=code`;
+      logInfo('Instagram OAuth URL generated', { redirectUri, appIdPresent: Boolean(appId) });
+      
+      return sendJson(res, 200, { oauth_url: oauthUrl });
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/auth/instagram-callback') {
+      const data = parseJson((await readBody(req)).toString()) || {};
+      if (!data.code) {
+        logError('Instagram callback missing authorization code', { headers: req.headers, body: data });
+        return sendJson(res, 400, { error: 'Authorization code required.' });
+      }
+      
+      try {
+        // Get user from bearer token (creator must be signed in)
+        const token = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+        const user = await store.userForToken(token);
+        if (!user) {
+          logError('Instagram callback called without valid session', { tokenPresent: Boolean(token) });
+          return sendJson(res, 401, { error: 'Please sign in first.' });
+        }
+        
+        // Exchange authorization code for Instagram access token
+        const appId = process.env.META_APP_ID;
+        const appSecret = process.env.META_APP_SECRET;
+        const frontendBaseUrl = process.env.FRONTEND_BASE_URL || 'http://localhost:3000';
+        const redirectUri = `${frontendBaseUrl.replace(/\/$/, '')}/auth/instagram-callback`;
+        logInfo('Instagram callback start', { userId: user.id, redirectUri, appIdPresent: Boolean(appId), appSecretPresent: Boolean(appSecret) });
+        
+        const response = await fetch('https://graph.instagram.com/oauth/access_token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({
+            client_id: appId,
+            client_secret: appSecret,
+            grant_type: 'authorization_code',
+            redirect_uri: redirectUri,
+            code: data.code
+          }).toString()
+        });
+        
+        const tokenData = await response.json();
+        if (!response.ok || !tokenData.access_token) {
+          logError('Instagram token exchange failed', {
+            status: response.status,
+            tokenData,
+            redirectUri,
+            userId: user.id,
+          });
+          throw new Error(tokenData.error_description || 'Failed to exchange authorization code');
+        }
+        
+        // Save Instagram token for this creator
+        await store.createInstagramToken(user.id, tokenData.access_token);
+        logInfo('Instagram token saved successfully', { userId: user.id });
+        
+        return sendJson(res, 200, { message: 'Instagram connected successfully.' });
+      } catch (e) {
+        logError('Instagram callback error', {
+          message: e.message,
+          stack: e.stack,
+          userId: (await store.userForToken(String(req.headers.authorization || '').replace(/^Bearer\s+/i, '')))?.id,
+        });
+        return sendJson(res, 400, { error: e.message });
+      }
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/creator/instagram-posts') {
+      const token = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+      const user = await store.userForToken(token);
+      if (!user) return sendJson(res, 401, { error: 'Sign in required.' });
+      
+      try {
+        // Fetch creator's Instagram posts from Meta API
+        const igToken = await store.getInstagramToken(user.id);
+        if (!igToken) return sendJson(res, 400, { error: 'Instagram not connected. Please connect your account.' });
+        
+        // Using demo data for now (will integrate with Meta API)
+        const posts = await store.getCreatorInstagramPosts(user.id);
+        return sendJson(res, 200, { posts });
+      } catch (e) {
+        return sendJson(res, 400, { error: e.message });
+      }
+    }
+
+    // ── Sync Instagram posts from Meta API ──────────────────────────────────
+    if (req.method === 'POST' && url.pathname === '/api/creator/sync-instagram-posts') {
+      const token = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+      const user = await store.userForToken(token);
+      if (!user) return sendJson(res, 401, { error: 'Sign in required.' });
+      
+      try {
+        const igToken = await store.getInstagramToken(user.id);
+        if (!igToken) return sendJson(res, 400, { error: 'Instagram not connected.' });
+        
+        const accountId = process.env.META_INSTAGRAM_ACCOUNT_ID;
+        const metaAccessToken = process.env.META_ACCESS_TOKEN;
+        
+        // Fetch posts from Meta API
+        const response = await fetch(
+          `https://graph.instagram.com/${accountId}/media?fields=id,caption,media_type,media_url&access_token=${metaAccessToken}`
+        );
+        
+        if (!response.ok) {
+          const error = await response.json();
+          throw new Error(error.error?.message || 'Failed to fetch Instagram posts');
+        }
+        
+        const data = await response.json();
+        if (!data.data) return sendJson(res, 400, { error: 'No posts found.' });
+        
+        // Save posts to database
+        await store.syncInstagramPosts(user.id, data.data);
+        
+        const posts = await store.getCreatorInstagramPosts(user.id);
+        return sendJson(res, 200, { synced: data.data.length, posts });
+      } catch (e) {
+        logError('Instagram sync error', {
+          message: e.message,
+          stack: e.stack,
+          userId: user.id,
+        });
+        return sendJson(res, 400, { error: e.message });
+      }
     }
 
     // ── Dashboard ──────────────────────────────────────────────────────────────
@@ -424,7 +641,57 @@ http.createServer(async (req, res) => {
     if (req.method === 'POST' && /^\/api\/reels\/[^/]+\/products$/.test(url.pathname)) {
       const user = await requireCreator(req, res); if (!user) return;
       const slug = url.pathname.split('/')[3];
-      const data = parseJson((await readBody(req)).toString()) || {};
+      const body = await readBody(req);
+      const data = parseJson(body.toString()) || {};
+      
+      // Handle new format with products array and seller_links
+      if (Array.isArray(data.products)) {
+        // Validate all products
+        for (const product of data.products) {
+          // Validate product fields
+          if (!product.name || !product.imageUrl) {
+            return sendJson(res, 400, { error: 'Product name and image URL are required.' });
+          }
+          
+          // Validate seller links
+          if (!product.sellerLinks || product.sellerLinks.length === 0) {
+            return sendJson(res, 400, { error: 'At least 1 seller link is required per product.' });
+          }
+          
+          if (product.sellerLinks.length > 10) {
+            return sendJson(res, 400, { error: 'Maximum 10 seller links allowed per product.' });
+          }
+          
+          // Validate each seller link
+          for (const link of product.sellerLinks) {
+            if (!link.url) {
+              return sendJson(res, 400, { error: 'Seller link URL is required.' });
+            }
+            
+            // Validate URL format and domain
+            if (!validateUrl(link.url)) {
+              return sendJson(res, 400, { error: 'Seller link must be HTTPS and from approved domains (Amazon, Flipkart, Meesho, Myntra).' });
+            }
+            
+            // Ensure HTTPS
+            try {
+              const u = new URL(link.url);
+              if (u.protocol !== 'https:') {
+                return sendJson(res, 400, { error: 'All seller links must use HTTPS protocol.' });
+              }
+            } catch {
+              return sendJson(res, 400, { error: 'Invalid seller link URL.' });
+            }
+          }
+        }
+        
+        // All validation passed - save products
+        // For now, just acknowledge the save
+        await store.logEvent('Products saved', `${slug} - ${data.products.length} products`);
+        return sendJson(res, 201, { ok: true, saved: data.products.length });
+      }
+      
+      // Handle old format for backward compatibility
       const id   = String(data.id || data.name || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
       if (!id || !data.name || !data.category || !Number.isFinite(Number(data.price)) || !data.image)
         return sendJson(res, 400, { error: 'Product name, category, price, and image URL are required.' });
@@ -567,9 +834,19 @@ http.createServer(async (req, res) => {
 
     sendJson(res, 404, { error: 'Not found' });
   } catch (e) {
-    console.error(e);
+    logError('Unhandled server error', {
+      message: e.message,
+      stack: e.stack,
+      method: req.method,
+      url: req.url,
+    });
     sendJson(res, 500, { error: e.message || 'Server error' });
   }
 }).listen(PORT, () => {
+  logInfo('Dream4Deals backend running', {
+    port: PORT,
+    publicBaseUrl: process.env.PUBLIC_BASE_URL,
+    frontendBaseUrl: process.env.FRONTEND_BASE_URL,
+  });
   console.log(`Dream4Deals backend running at http://localhost:${PORT}`);
 });

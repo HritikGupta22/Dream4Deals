@@ -1,0 +1,10 @@
+{
+    "github.copilot.chat.agent.autoFix": true,
+    "github.copilot.chat.terminalChatLocation": "chatView",
+    "github.copilot.completions.chat.enabled": true,
+    "github.copilot.chat.codesearch.enabled": true,
+    "chat.disableAIFeatures": false,
+    "github.copilot.chat.alternateGeminiModelFPrompt.enabled": true,
+    "chat.extensionUnification.enabled": true,
+    "python.analysis.autoTranslateDocstrings": true
+}

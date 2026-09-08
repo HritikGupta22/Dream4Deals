@@ -351,4 +351,94 @@ module.exports = {
   logClick, getDashboard, getAnalytics,
   requestEmailVerification, verifyEmail, requestPasswordReset, resetPassword, logout,
   getActivityFeed, getReelAutomation, saveReelAutomation, deleteReelAutomation,
+  getInstagramToken, createInstagramToken, getCreatorInstagramPosts, syncInstagramPosts, getCreatorPostProducts, saveProductsForPost,
 };
+
+
+// ── Instagram Posts (New) ──────────────────────────────────────────────────────
+async function getInstagramToken(creatorId) {
+  const res = await pool.query(
+    'SELECT instagram_access_token FROM creators WHERE id=$1',
+    [creatorId]
+  );
+  return res.rows[0]?.instagram_access_token || null;
+}
+
+async function createInstagramToken(creatorId, token) {
+  await pool.query(
+    'UPDATE creators SET instagram_access_token=$1 WHERE id=$2',
+    [token, creatorId]
+  );
+  return token;
+}
+
+async function getCreatorInstagramPosts(creatorId) {
+  // Fetch posts from database
+  const res = await pool.query(
+    `SELECT id, instagram_media_id, caption, image_url, post_type, created_at
+     FROM creator_posts
+     WHERE creator_id=$1
+     ORDER BY created_at DESC
+     LIMIT 50`,
+    [creatorId]
+  );
+  
+  return res.rows.map(row => ({
+    id: row.id,
+    instagramMediaId: row.instagram_media_id,
+    caption: row.caption,
+    imageUrl: row.image_url,
+    postType: row.post_type,
+    createdAt: row.created_at,
+    products: []
+  }));
+}
+
+async function syncInstagramPosts(creatorId, posts) {
+  // Insert or update posts from Meta API
+  for (const post of posts) {
+    await pool.query(
+      `INSERT INTO creator_posts (creator_id, instagram_media_id, caption, image_url, post_type)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (creator_id, instagram_media_id) DO UPDATE
+       SET caption=$3, image_url=$4, updated_at=NOW()`,
+      [creatorId, post.id, post.caption || '', post.media_type || 'CAROUSEL', post.media_url || '']
+    );
+  }
+}
+
+async function getCreatorPostProducts(postId) {
+  const res = await pool.query(
+    `SELECT p.id, p.name, p.image_url, p.created_at
+     FROM products p
+     WHERE p.creator_post_id=$1
+     ORDER BY p.created_at DESC`,
+    [postId]
+  );
+  return res.rows;
+}
+
+async function saveProductsForPost(creatorId, postId, products) {
+  // Delete existing products for this post
+  await pool.query('DELETE FROM products WHERE creator_post_id=$1', [postId]);
+  
+  // Insert new products
+  for (const product of products) {
+    const productId = `prod-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    
+    await pool.query(
+      `INSERT INTO products (id, reel_id, name, category, price, image, creator_id, creator_post_id, image_url)
+       VALUES ($1, NULL, $2, 'uncategorized', 0, '', $3, $4, $5)`,
+      [productId, product.name, creatorId, postId, product.imageUrl]
+    );
+    
+    // Insert seller links
+    for (const link of product.sellerLinks || []) {
+      await pool.query(
+        `INSERT INTO seller_links (product_id, platform, affiliate_url)
+         VALUES ($1, $2, $3)`,
+        [productId, link.platform, link.url]
+      );
+    }
+  }
+}

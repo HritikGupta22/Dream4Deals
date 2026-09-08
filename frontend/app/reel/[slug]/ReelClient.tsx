@@ -1,20 +1,101 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Image from "next/image";
 import { apiFetch, apiPost, money } from "@/lib/api";
 import type { Reel, PlatformOffers, Seller } from "@/lib/types";
 
 export default function ReelClient({ reel }: { reel: Reel }) {
   const [offers, setOffers] = useState<PlatformOffers[]>([]);
-  const [selected, setSelected] = useState<{ name: string; image: string } | null>(null);
+  const [selected, setSelected] = useState<{ name: string; image: string; sellerLinks?: any[] } | null>(null);
+  const [loading, setLoading] = useState(false);
 
   async function openComparison(id: string) {
     const product = reel.products.find((p) => p.id === id)!;
-    const data = await apiFetch<PlatformOffers[]>(`/api/offers/${id}`);
-    setSelected({ name: product.name, image: product.image });
-    setOffers(data);
-    setTimeout(() => document.getElementById("comparison")?.scrollIntoView({ behavior: "smooth", block: "center" }), 50);
+    setLoading(true);
+    
+    try {
+      // Try to fetch offers from backend
+      const data = await apiFetch<PlatformOffers[]>(`/api/offers/${id}`);
+      
+      if (data && data.length > 0) {
+        // Backend has offers
+        setSelected({ name: product.name, image: product.image });
+        setOffers(data);
+      } else {
+        // Use seller_links from product if available
+        if (product.sellerLinks && product.sellerLinks.length > 0) {
+          // Group seller_links by platform
+          const grouped: { [key: string]: any[] } = {};
+          
+          product.sellerLinks.forEach((link) => {
+            const platform = link.platform || 'Unknown';
+            if (!grouped[platform]) {
+              grouped[platform] = [];
+            }
+            grouped[platform].push({
+              seller: link.seller || platform,
+              price: link.price || 0,
+              rating: link.rating || '★★★★★',
+              delivery: link.delivery || '2-3 days',
+              link: link.url || '#'
+            });
+          });
+          
+          const platformOffers: PlatformOffers[] = Object.keys(grouped).map(platform => ({
+            platform,
+            sellers: grouped[platform]
+          }));
+          
+          setSelected({ 
+            name: product.name, 
+            image: product.image,
+            sellerLinks: product.sellerLinks
+          });
+          setOffers(platformOffers);
+        } else {
+          // No offers or seller_links available
+          setSelected({ name: product.name, image: product.image });
+          setOffers([]);
+        }
+      }
+      
+      setTimeout(() => document.getElementById("comparison")?.scrollIntoView({ behavior: "smooth", block: "center" }), 50);
+    } catch (error) {
+      console.error('Error fetching offers:', error);
+      // Still show the comparison panel with seller links if available
+      if (product.sellerLinks && product.sellerLinks.length > 0) {
+        const grouped: { [key: string]: any[] } = {};
+        
+        product.sellerLinks.forEach((link) => {
+          const platform = link.platform || 'Unknown';
+          if (!grouped[platform]) {
+            grouped[platform] = [];
+          }
+          grouped[platform].push({
+            seller: link.seller || platform,
+            price: link.price || 0,
+            rating: link.rating || '★★★★★',
+            delivery: link.delivery || '2-3 days',
+            link: link.url || '#'
+          });
+        });
+        
+        const platformOffers: PlatformOffers[] = Object.keys(grouped).map(platform => ({
+          platform,
+          sellers: grouped[platform]
+        }));
+        
+        setSelected({ 
+          name: product.name, 
+          image: product.image,
+          sellerLinks: product.sellerLinks
+        });
+        setOffers(platformOffers);
+      }
+    } finally {
+      setLoading(false);
+    }
   }
 
   function lowestKey(platforms: PlatformOffers[]) {
@@ -102,41 +183,50 @@ export default function ReelClient({ reel }: { reel: Reel }) {
           <div>
             <p className="text-[11px] font-bold tracking-[1.5px] text-[#e96050] mb-3">COMPARE PRICES</p>
             <h2 className="font-serif text-[34px] tracking-[-1.5px] mb-4">{selected.name}</h2>
-            <p className="text-[13px] bg-white p-3 mb-2">✦ The lowest available offer is highlighted.</p>
-            {offers.map((group) => (
-              <div key={group.platform} className="mt-5">
-                <h3 className="text-[14px] font-bold mb-2">{group.platform}</h3>
-                {[...(group.sellers ?? [])].sort((a, b) => a.price - b.price).map((offer) => {
-                  const key = `${group.platform}|${offer.seller}|${offer.price}`;
-                  const redirect = `/api/redirect?platform=${encodeURIComponent(group.platform)}&product=${encodeURIComponent(selected.name)}&url=${encodeURIComponent(offer.link)}`;
-                  return (
-                    <div
-                      key={key}
-                      className={`bg-white p-3 my-2 grid grid-cols-[1fr_1fr_auto] items-center gap-2 ${key === best ? "outline outline-1 outline-[#e8a196]" : ""}`}
-                    >
-                      <div>
-                        <b className="block text-[13px]">{offer.seller}{key === best ? " · Lowest price" : ""}</b>
-                        <small className="text-[#716966] text-[11px]">☆ {offer.rating}</small>
-                      </div>
-                      <small className="text-[#716966] text-[11px]">{offer.delivery}</small>
-                      <div className="text-right">
-                        <strong className="block text-[15px]">{money(offer.price)}</strong>
-                        <a
-                          href={`http://localhost:3000${redirect}`}
-                          target="_blank"
-                          rel="noreferrer"
-                          onClick={() => apiPost("/api/click", { product: selected.name, platform: group.platform, seller: offer.seller })}
-                          className="block bg-[#241d1d] text-white no-underline px-2 py-1.5 text-[11px] mt-1 text-center"
+            
+            {loading ? (
+              <p className="text-[13px] text-[#716966]">Loading seller options...</p>
+            ) : offers.length === 0 ? (
+              <p className="text-[13px] text-[#716966]">No seller options available for this product yet.</p>
+            ) : (
+              <>
+                <p className="text-[13px] bg-white p-3 mb-2">✦ The lowest available offer is highlighted.</p>
+                {offers.map((group) => (
+                  <div key={group.platform} className="mt-5">
+                    <h3 className="text-[14px] font-bold mb-2 capitalize">{group.platform}</h3>
+                    {[...(group.sellers ?? [])].sort((a, b) => a.price - b.price).map((offer) => {
+                      const key = `${group.platform}|${offer.seller}|${offer.price}`;
+                      const redirect = `/api/redirect?platform=${encodeURIComponent(group.platform)}&product=${encodeURIComponent(selected.name)}&url=${encodeURIComponent(offer.link)}`;
+                      return (
+                        <div
+                          key={key}
+                          className={`bg-white p-3 my-2 grid grid-cols-[1fr_1fr_auto] items-center gap-2 ${key === best ? "outline outline-1 outline-[#e8a196] bg-green-50" : ""}`}
                         >
-                          Buy now
-                        </a>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            ))}
-            <small className="text-[#716966] text-[11px] mt-4 block">Prices shown are illustrative until marketplace feeds are connected.</small>
+                          <div>
+                            <b className="block text-[13px]">{offer.seller}{key === best ? " · Lowest price" : ""}</b>
+                            <small className="text-[#716966] text-[11px]">☆ {offer.rating}</small>
+                          </div>
+                          <small className="text-[#716966] text-[11px]">{offer.delivery}</small>
+                          <div className="text-right">
+                            <strong className="block text-[15px]">{offer.price > 0 ? money(offer.price) : "Add price"}</strong>
+                            <a
+                              href={`http://localhost:3000${redirect}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              onClick={() => apiPost("/api/click", { product: selected.name, platform: group.platform, seller: offer.seller })}
+                              className="block bg-[#241d1d] text-white no-underline px-2 py-1.5 text-[11px] mt-1 text-center hover:bg-[#3a2f2f]"
+                            >
+                              Buy now
+                            </a>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
+              </>
+            )}
+            <small className="text-[#716966] text-[11px] mt-4 block">Prices and availability may vary by seller and region.</small>
           </div>
         </section>
       )}

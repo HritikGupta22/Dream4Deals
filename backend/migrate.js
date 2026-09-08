@@ -112,6 +112,35 @@ async function migrate() {
         kind       TEXT NOT NULL,
         processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+
+      -- Task 2-3: Instagram posts & seller links
+      ALTER TABLE creators ADD COLUMN IF NOT EXISTS instagram_access_token TEXT;
+
+      CREATE TABLE IF NOT EXISTS creator_posts (
+        id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        creator_id          UUID NOT NULL REFERENCES creators(id) ON DELETE CASCADE,
+        instagram_media_id  TEXT NOT NULL,
+        caption             TEXT NOT NULL DEFAULT '',
+        image_url           TEXT NOT NULL DEFAULT '',
+        post_type           TEXT NOT NULL DEFAULT 'CAROUSEL',
+        created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(creator_id, instagram_media_id)
+      );
+
+      -- Update products table to link to creator_posts
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS creator_id UUID REFERENCES creators(id) ON DELETE CASCADE;
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS creator_post_id UUID REFERENCES creator_posts(id) ON DELETE CASCADE;
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS image_url TEXT;
+
+      CREATE TABLE IF NOT EXISTS seller_links (
+        id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        product_id      TEXT NOT NULL,
+        reel_id         UUID,
+        platform        TEXT NOT NULL,
+        affiliate_url   TEXT NOT NULL,
+        created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
     `);
     console.log('✓ Migrations complete');
   } finally {

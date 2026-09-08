@@ -368,3 +368,9 @@ Open `http://localhost:3001/reel/anaya-pink-edit`
 1. **Week 1**: Run migrations, deploy to production (Railway/Render + Vercel + Neon)
 2. **Week 2-3**: Beta launch with 5-10 creators, monitor Sentry/Better Stack
 3. **Week 4**: Public announcement on Twitter/Instagram/LinkedIn
+""  
+"---"  
+""  
+"## Phase 6 - Creator Studio Redesign: Instagram OAuth + Post Grid Dashboard"  
+""  
+"**Goal:** Redesign Dream4Deals Creator Studio from manual form-based workflow to Instagram OAuth + post grid dashboard (like Superprofile.bio)." 

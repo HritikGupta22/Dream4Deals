@@ -5,12 +5,22 @@ export interface Creator {
   bio?: string;
 }
 
+export interface SellerLink {
+  platform: string;
+  url: string;
+  seller?: string;
+  price?: number;
+  rating?: string;
+  delivery?: string;
+}
+
 export interface Product {
   id: string;
   name: string;
   category: string;
   price: number;
   image: string;
+  sellerLinks?: SellerLink[];
 }
 
 export interface Seller {
