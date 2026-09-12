@@ -1,0 +1,45 @@
+{
+  "checkedAt": "2026-09-12T18:23:42.818Z",
+  "creator": "@dream4deal",
+  "subscriptions": [
+    {
+      "id": "17987391504050259",
+      "fields": [
+        "comments",
+        "messages"
+      ]
+    }
+  ],
+  "lastLoggedCommentWebhookAt": null,
+  "note": "Account subscriptions do not verify app mode, app-level webhook settings, or delivery. Claimed events do not prove a message was delivered. Comment search is limited to the first 50 comments per mapped post.",
+  "posts": [
+    {
+      "reelSlug": "instagram-18002621804792044",
+      "mediaId": "18002621804792044",
+      "comments": [
+        {
+          "commentId": "18094801295452944",
+          "username": "moon.litfeelss",
+          "createdAt": "2026-09-12T18:16:55+0000",
+          "hidden": false,
+          "eventClaimed": false
+        }
+      ],
+      "hasMorePages": false
+    },
+    {
+      "reelSlug": "instagram-18190496512393972",
+      "mediaId": "18190496512393972",
+      "comments": [
+        {
+          "commentId": "17991703010868082",
+          "username": "moon.litfeelss",
+          "createdAt": "2026-09-05T14:11:44+0000",
+          "hidden": false,
+          "eventClaimed": false
+        }
+      ],
+      "hasMorePages": false
+    }
+  ]
+}

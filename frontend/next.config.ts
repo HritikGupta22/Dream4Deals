@@ -1,6 +1,9 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // Permit the development tunnel to load Next.js development resources.
+  // This has no effect in production builds.
+  allowedDevOrigins: ['broiler-styling-shucking.ngrok-free.dev'],
   images: {
     remotePatterns: [{ protocol: "https", hostname: "**" }, { protocol: "http", hostname: "**" }],
   },

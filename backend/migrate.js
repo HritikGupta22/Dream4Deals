@@ -115,6 +115,11 @@ async function migrate() {
 
       -- Task 2-3: Instagram posts & seller links
       ALTER TABLE creators ADD COLUMN IF NOT EXISTS instagram_access_token TEXT;
+      ALTER TABLE creators ADD COLUMN IF NOT EXISTS instagram_user_id TEXT UNIQUE;
+
+      -- Upgrade databases created before per-reel automation was introduced.
+      ALTER TABLE automation_rules ADD COLUMN IF NOT EXISTS creator_id UUID REFERENCES creators(id) ON DELETE CASCADE;
+      ALTER TABLE automation_rules ADD COLUMN IF NOT EXISTS reel_slug TEXT;
 
       CREATE TABLE IF NOT EXISTS creator_posts (
         id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),

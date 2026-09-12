@@ -21,10 +21,13 @@ function matchesTrigger(text, triggers) {
 
 // ── Reply template ────────────────────────────────────────────────────────────
 function applyTemplate(template, { name, url, title }) {
-  return String(template || 'Here is the link: {{url}}')
-    .replaceAll('{{name}}', name ? ` ${name}` : '')
-    .replaceAll('{{url}}', url)
-    .replaceAll('{{title}}', title || '');
+  const values = { name: name || '', url: url || '', title: title || '' };
+  // Studio uses {name}/{url}; retain support for legacy Hey{{name}} templates.
+  // A single pass also leaves any braces in replacement values untouched.
+  return String(template || 'Here is the link: {{url}}').replace(
+    /\{\{(name|url|title)\}\}|\{(name|url|title)\}/g,
+    (_, legacyKey, key) => legacyKey === 'name' && name ? ` ${name}` : values[legacyKey || key]
+  );
 }
 
 // ── Idempotency ───────────────────────────────────────────────────────────────
@@ -32,6 +35,16 @@ async function isAlreadyProcessed(eventId) {
   if (!eventId) return false;
   const res = await pool.query('SELECT 1 FROM processed_events WHERE event_id=$1', [eventId]);
   return res.rows.length > 0;
+}
+
+async function claimEvent(eventId, kind) {
+  if (!eventId) return true;
+  const res = await pool.query(
+    `INSERT INTO processed_events (event_id, kind) VALUES ($1,$2)
+     ON CONFLICT DO NOTHING RETURNING event_id`,
+    [eventId, kind]
+  );
+  return res.rows.length === 1;
 }
 
 async function markProcessed(eventId, kind) {
@@ -94,7 +107,7 @@ function collectIncoming(payload) {
     // DMs via messaging array
     for (const item of entry.messaging || []) {
       const message = item.message || {};
-      if (message.is_echo) continue;
+      if (!item.message || message.is_echo) continue;
       jobs.push({
         kind:     'dm',
         eventId:  message.mid || null,
@@ -109,31 +122,54 @@ function collectIncoming(payload) {
 }
 
 // ── Meta Graph API calls ──────────────────────────────────────────────────────
-async function graphPost(path, body) {
-  const token   = process.env.META_ACCESS_TOKEN;
-  const version = process.env.META_GRAPH_API_VERSION || 'v22.0';
+async function graphPost(path, body, accessToken) {
+  const token   = accessToken || process.env.META_ACCESS_TOKEN;
+  const version = process.env.META_GRAPH_API_VERSION || 'v25.0';
   if (!token) return { sent: false, reason: 'META_ACCESS_TOKEN not configured' };
 
-  const res  = await fetch(`https://graph.facebook.com/${version}${path}`, {
+  const res  = await fetch(`https://graph.instagram.com/${version}${path}`, {
     method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ ...body, access_token: token }),
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    },
+    body: JSON.stringify(body),
   });
   const data = await res.json();
-  if (!res.ok) throw new Error(data?.error?.message || 'Meta API error');
+  if (!res.ok || data?.error) {
+    const error = new Error(data?.error?.message || 'Meta API error');
+    error.meta = {
+      endpoint: path, httpStatus: res.status, code: data?.error?.code,
+      subcode: data?.error?.error_subcode, type: data?.error?.type,
+      traceId: data?.error?.fbtrace_id, transient: data?.error?.is_transient,
+    };
+    throw error;
+  }
   return { sent: true, data };
 }
 
 // Public reply on the comment (visible to everyone — no link, just teaser)
-function sendPublicCommentReply(commentId, message) {
-  return graphPost(`/${commentId}/replies`, { message });
+function sendPublicCommentReply(commentId, message, accessToken) {
+  return graphPost(`/${commentId}/replies`, { message }, accessToken);
+}
+
+// A comment author need not have opened a DM conversation or follow the creator.
+function sendPrivateCommentReply(commentId, message, { accountId, accessToken } = {}) {
+  if (!commentId || !accountId || !accessToken) {
+    return Promise.resolve({ sent: false, reason: 'Private reply requires comment ID and creator connection' });
+  }
+  return graphPost(`/${accountId}/messages`, {
+    recipient: { comment_id: commentId }, message: { text: message },
+  }, accessToken);
 }
 
 // Private DM with the actual shopping link
-function sendDirectMessage(senderId, message) {
-  const account = process.env.META_INSTAGRAM_ACCOUNT_ID;
+function sendDirectMessage(senderId, message, { accountId, accessToken } = {}) {
+  const account = accountId || process.env.META_INSTAGRAM_ACCOUNT_ID;
   if (!account) return Promise.resolve({ sent: false, reason: 'META_INSTAGRAM_ACCOUNT_ID not configured' });
-  return graphPost(`/${account}/messages`, { recipient: { id: senderId }, message: { text: message } });
+  // Always target the connected Instagram account. The access token is carried
+  // in the Authorization header and already identifies the sender.
+  return graphPost(`/${account}/messages`, { recipient: { id: senderId }, message: { text: message } }, accessToken);
 }
 
 // ── Local test simulator ──────────────────────────────────────────────────────
@@ -181,9 +217,11 @@ module.exports = {
   matchesTrigger,
   applyTemplate,
   isAlreadyProcessed,
+  claimEvent,
   markProcessed,
   collectIncoming,
   sendPublicCommentReply,
+  sendPrivateCommentReply,
   sendDirectMessage,
   buildTestPayload,
 };

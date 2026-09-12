@@ -1,9 +1,66 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import Image from "next/image";
 import { apiFetch, apiPost, money } from "@/lib/api";
-import type { Reel, PlatformOffers, Seller } from "@/lib/types";
+import type { Offer, PlatformOffers, Reel, Seller } from "@/lib/types";
+
+function normalizeOffers(data: PlatformOffers[] | Offer[] | null | undefined): PlatformOffers[] {
+  if (!Array.isArray(data) || data.length === 0) return [];
+
+  if ((data[0] as PlatformOffers)?.sellers) {
+    return data as PlatformOffers[];
+  }
+
+  const grouped = new Map<string, { platform: string; sellers: Seller[] }>();
+
+  (data as Offer[]).forEach((offer) => {
+    const platform = offer.platform || "Unknown";
+    const seller = {
+      seller: offer.seller || platform,
+      price: Number(offer.price ?? 0),
+      rating: offer.rating || "★★★★★",
+      delivery: offer.delivery || "2-3 days",
+      link: offer.link || "#",
+    };
+
+    const existing = grouped.get(platform);
+    if (existing) {
+      existing.sellers.push(seller);
+    } else {
+      grouped.set(platform, { platform, sellers: [seller] });
+    }
+  });
+
+  return Array.from(grouped.values()).map((group) => ({
+    platform: group.platform,
+    sellers: [...group.sellers].sort((a, b) => a.price - b.price),
+  }));
+}
+
+function sellerLinksToOffers(product: Reel["products"][number]): PlatformOffers[] {
+  if (!product.sellerLinks || product.sellerLinks.length === 0) return [];
+
+  const grouped: { [key: string]: Seller[] } = {};
+
+  product.sellerLinks.forEach((link) => {
+    const platform = link.platform || "Unknown";
+    if (!grouped[platform]) grouped[platform] = [];
+
+    grouped[platform].push({
+      seller: link.seller || platform,
+      price: Number(link.price ?? 0),
+      rating: link.rating || "★★★★★",
+      delivery: link.delivery || "2-3 days",
+      link: link.url || "#",
+    });
+  });
+
+  return Object.entries(grouped).map(([platform, sellers]) => ({
+    platform,
+    sellers: [...sellers].sort((a, b) => a.price - b.price),
+  }));
+}
 
 export default function ReelClient({ reel }: { reel: Reel }) {
   const [offers, setOffers] = useState<PlatformOffers[]>([]);
@@ -13,86 +70,35 @@ export default function ReelClient({ reel }: { reel: Reel }) {
   async function openComparison(id: string) {
     const product = reel.products.find((p) => p.id === id)!;
     setLoading(true);
-    
+
     try {
-      // Try to fetch offers from backend
-      const data = await apiFetch<PlatformOffers[]>(`/api/offers/${id}`);
-      
-      if (data && data.length > 0) {
-        // Backend has offers
+      const data = await apiFetch<PlatformOffers[] | Offer[]>(`/api/offers/product/${id}`);
+      const backendOffers = normalizeOffers(data);
+
+      if (backendOffers.length > 0) {
         setSelected({ name: product.name, image: product.image });
-        setOffers(data);
+        setOffers(backendOffers);
       } else {
-        // Use seller_links from product if available
-        if (product.sellerLinks && product.sellerLinks.length > 0) {
-          // Group seller_links by platform
-          const grouped: { [key: string]: any[] } = {};
-          
-          product.sellerLinks.forEach((link) => {
-            const platform = link.platform || 'Unknown';
-            if (!grouped[platform]) {
-              grouped[platform] = [];
-            }
-            grouped[platform].push({
-              seller: link.seller || platform,
-              price: link.price || 0,
-              rating: link.rating || '★★★★★',
-              delivery: link.delivery || '2-3 days',
-              link: link.url || '#'
-            });
-          });
-          
-          const platformOffers: PlatformOffers[] = Object.keys(grouped).map(platform => ({
-            platform,
-            sellers: grouped[platform]
-          }));
-          
-          setSelected({ 
-            name: product.name, 
-            image: product.image,
-            sellerLinks: product.sellerLinks
-          });
-          setOffers(platformOffers);
-        } else {
-          // No offers or seller_links available
-          setSelected({ name: product.name, image: product.image });
-          setOffers([]);
-        }
+        const fallbackOffers = sellerLinksToOffers(product);
+        setSelected({
+          name: product.name,
+          image: product.image,
+          sellerLinks: product.sellerLinks,
+        });
+        setOffers(fallbackOffers);
       }
-      
+
       setTimeout(() => document.getElementById("comparison")?.scrollIntoView({ behavior: "smooth", block: "center" }), 50);
     } catch (error) {
-      console.error('Error fetching offers:', error);
-      // Still show the comparison panel with seller links if available
-      if (product.sellerLinks && product.sellerLinks.length > 0) {
-        const grouped: { [key: string]: any[] } = {};
-        
-        product.sellerLinks.forEach((link) => {
-          const platform = link.platform || 'Unknown';
-          if (!grouped[platform]) {
-            grouped[platform] = [];
-          }
-          grouped[platform].push({
-            seller: link.seller || platform,
-            price: link.price || 0,
-            rating: link.rating || '★★★★★',
-            delivery: link.delivery || '2-3 days',
-            link: link.url || '#'
-          });
-        });
-        
-        const platformOffers: PlatformOffers[] = Object.keys(grouped).map(platform => ({
-          platform,
-          sellers: grouped[platform]
-        }));
-        
-        setSelected({ 
-          name: product.name, 
-          image: product.image,
-          sellerLinks: product.sellerLinks
-        });
-        setOffers(platformOffers);
-      }
+      console.error("Error fetching offers:", error);
+
+      const fallbackOffers = sellerLinksToOffers(product);
+      setSelected({
+        name: product.name,
+        image: product.image,
+        sellerLinks: product.sellerLinks,
+      });
+      setOffers(fallbackOffers);
     } finally {
       setLoading(false);
     }
@@ -210,7 +216,7 @@ export default function ReelClient({ reel }: { reel: Reel }) {
                           <div className="text-right">
                             <strong className="block text-[15px]">{offer.price > 0 ? money(offer.price) : "Add price"}</strong>
                             <a
-                              href={`http://localhost:3000${redirect}`}
+                              href={redirect}
                               target="_blank"
                               rel="noreferrer"
                               onClick={() => apiPost("/api/click", { product: selected.name, platform: group.platform, seller: offer.seller })}

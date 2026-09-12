@@ -34,7 +34,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
       description,
       images: [image],
     },
-    canonical: `https://dream4deals.com/reel/${slug}`,
+    alternates: { canonical: `https://dream4deals.com/reel/${slug}` },
     robots: { index: true, follow: true },
   };
 }

@@ -29,6 +29,20 @@ backend/.env       Meta credentials (copy from .env.example; do not commit)
 5. Deploy on public HTTPS. Meta cannot reach `localhost`.
 6. In Creator Studio, turn auto-reply on for comments and/or DMs.
 
+### Diagnose missing Instagram replies
+
+Run `node backend/diagnose-instagram.js dream4deal moon.litfeelss` to check account subscriptions and recent comments by that username. This reads Meta and the database without sending messages. The report is saved to `backend/storage/instagram-diagnostics.json`.
+
+The Studio simulator checks rule matching only; it does not test Meta webhook delivery or send a DM. An account subscription containing `comments` also does not verify the app-level callback configuration or app access for public users. When a real comment appears in the API but there is no corresponding incoming request in the tunnel inspector or backend log, check the app's publishing status, Instagram webhook callback/field settings, and permission access in Meta Developers. Use Meta's `comments` webhook test to check its configured route.
+
+### Recovery when comment webhooks are missing
+
+Run `node backend/preview-comment-recovery.js` for a read-only recovery scan. It logs eligible missed comments in `backend/storage/backend.log`, sends no messages, and does not claim events.
+
+The backend also supports `INSTAGRAM_COMMENT_RECOVERY_MODE=preview` for a scan every 60 seconds after restart. Recovery defaults to `off`; `live` explicitly enables dispatch through the normal private-comment-reply handler. Do not enable live mode while diagnosis is restricted to read-only checks.
+
+Recovery checks mapped posts with enabled comment rules. It considers visible matching comments between 1 minute and 1 hour old, excludes the creator's comments and already claimed events, and does not require a follower relationship. Each scan reads at most three pages of 50 comments per post and logs when that limit is reached. Live recovery shares event IDs with webhooks to avoid duplicate sends. Meta can still reject a private reply; this addresses missing webhook events, not Meta permission or recipient restrictions. Existing failed event claims are not retried by this mechanism.
+
 Reels are matched by Instagram media ID (see `instagramMediaId` in `backend/data.js`). DMs without a shared reel use that user’s last mapped reel, then the fallback slug.
 
 ## What this MVP includes

@@ -1,22 +1,23 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useSearchParams, useRouter } from 'next/navigation';
+import { useEffect, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
+const API_URL = '';
 
 export default function InstagramCallbackPage() {
-  const searchParams = useSearchParams();
   const router = useRouter();
+  const started = useRef(false);
   const [status, setStatus] = useState('Processing...');
   const [error, setError] = useState('');
 
   useEffect(() => {
     async function handleCallback() {
       try {
-        const code = searchParams.get('code');
-        const error_param = searchParams.get('error');
-        const error_description = searchParams.get('error_description');
+        const params = new URLSearchParams(window.location.search);
+        const code = params.get('code');
+        const error_param = params.get('error');
+        const error_description = params.get('error_description');
 
         if (error_param) {
           throw new Error(error_description || error_param);
@@ -28,37 +29,41 @@ export default function InstagramCallbackPage() {
 
         setStatus('Exchanging code for token...');
 
-        // Get the stored token from localStorage to identify the user
-        const token = localStorage.getItem('dream4deals_token');
-        if (!token) {
-          throw new Error('Please sign in first');
-        }
+        const state = params.get('state');
+        if (!state) throw new Error('Missing OAuth state. Please try connecting again.');
 
-        // Send the code to backend
+        const controller = new AbortController();
+        const timeout = window.setTimeout(() => controller.abort(), 20_000);
         const res = await fetch(`${API_URL}/api/auth/instagram-callback`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
           },
-          body: JSON.stringify({ code })
+          body: JSON.stringify({ code, state }),
+          signal: controller.signal,
         });
+        window.clearTimeout(timeout);
 
         const data = await res.json();
         if (!res.ok) throw new Error(data.error);
+        localStorage.setItem('dream4deals_token', data.token);
 
         setStatus('✓ Instagram connected successfully!');
         setTimeout(() => {
           router.push('/studio');
         }, 2000);
       } catch (e) {
-        setError(e.message);
+        setError(e instanceof Error && e.name === 'AbortError'
+          ? 'Dream4Deals did not respond within 20 seconds. Confirm the frontend and backend are running, then try again.'
+          : e instanceof Error ? e.message : 'Instagram connection failed.');
         setStatus('Connection failed');
       }
     }
 
+    if (started.current) return;
+    started.current = true;
     handleCallback();
-  }, [searchParams, router]);
+  }, [router]);
 
   return (
     <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center p-6">

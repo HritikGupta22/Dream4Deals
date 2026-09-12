@@ -2,9 +2,11 @@ node_modules/
 backend/node_modules/
 backend/.env
 backend/local-store.json
+backend/storage/
 backend/uploads/
 .DS_Store
 Thumbs.db
 frontend/.next/
 frontend/out/
 /*.md
+backend/storage/backend.log

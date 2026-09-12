@@ -2,11 +2,47 @@
 
 import { useState, useEffect } from 'react';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
+const API_URL = '';
+
+type Stage = 'auth' | 'posts' | 'products' | 'automation';
+
+interface Creator {
+  id: string;
+  name: string;
+  handle: string;
+  email: string;
+}
+
+interface SellerLink {
+  platform: string;
+  url: string;
+}
+
+interface StudioProduct {
+  id: number | string;
+  name: string;
+  imageUrl: string;
+  sellerLinks: SellerLink[];
+}
+
+interface InstagramPost {
+  id: string;
+  instagramMediaId: string;
+  reelSlug?: string;
+  caption: string;
+  imageUrl: string;
+  products?: StudioProduct[];
+}
+
+type ValidationErrors = Record<string, string[]>;
+
+function messageFromError(error: unknown, fallback = 'Something went wrong.') {
+  return error instanceof Error ? error.message : fallback;
+}
 
 // Validation functions
-const validateProductName = (name) => name.trim().length > 0;
-const validateImageUrl = (url) => {
+const validateProductName = (name: string) => name.trim().length > 0;
+const validateImageUrl = (url: string) => {
   try {
     new URL(url);
     return url.toLowerCase().startsWith('http');
@@ -15,7 +51,7 @@ const validateImageUrl = (url) => {
   }
 };
 
-const validateSellerUrl = (url) => {
+const validateSellerUrl = (url: string) => {
   try {
     const u = new URL(url);
     const allowedDomains = ['amazon.in', 'amazon.com', 'flipkart.com', 'myntra.com', 'meesho.com'];
@@ -28,16 +64,16 @@ const validateSellerUrl = (url) => {
 };
 
 export default function StudioPage() {
-  const [stage, setStage] = useState('auth'); // auth, posts, products, automation
-  const [user, setUser] = useState(null);
-  const [posts, setPosts] = useState([]);
-  const [selectedPost, setSelectedPost] = useState(null);
-  const [products, setProducts] = useState([]);
+  const [stage, setStage] = useState<Stage>('auth');
+  const [user, setUser] = useState<Creator | null>(null);
+  const [posts, setPosts] = useState<InstagramPost[]>([]);
+  const [selectedPost, setSelectedPost] = useState<InstagramPost | null>(null);
+  const [products, setProducts] = useState<StudioProduct[]>([]);
   const [automation, setAutomation] = useState({ enabled: false });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
-  const [validationErrors, setValidationErrors] = useState({});
+  const [validationErrors, setValidationErrors] = useState<ValidationErrors>({});
 
   // Check if user is logged in
   useEffect(() => {
@@ -47,7 +83,7 @@ export default function StudioPage() {
     }
   }, []);
 
-  const fetchUser = async (token) => {
+  const fetchUser = async (token: string) => {
     try {
       const res = await fetch(`${API_URL}/api/auth/me`, {
         headers: { 'Authorization': `Bearer ${token}` }
@@ -57,7 +93,7 @@ export default function StudioPage() {
       setUser(data.user);
       setStage('posts');
       fetchPosts(token);
-    } catch (e) {
+    } catch {
       localStorage.removeItem('dream4deals_token');
       setUser(null);
       setStage('auth');
@@ -77,7 +113,7 @@ export default function StudioPage() {
 
       window.location.href = data.oauth_url;
     } catch (e) {
-      setError('Failed to start Instagram OAuth: ' + e.message);
+      setError('Failed to start Instagram OAuth: ' + messageFromError(e));
     } finally {
       setLoading(false);
     }
@@ -85,7 +121,8 @@ export default function StudioPage() {
 
 
 
-  const fetchPosts = async (token) => {
+  const fetchPosts = async (token: string | null) => {
+    if (!token) throw new Error('Sign in required.');
     try {
       setLoading(true);
       setError('');
@@ -109,13 +146,13 @@ export default function StudioPage() {
         setPosts(data.posts);
       }
     } catch (e) {
-      setError(e.message);
+      setError(messageFromError(e));
     } finally {
       setLoading(false);
     }
   };
 
-  const handlePostSelect = (post) => {
+  const handlePostSelect = (post: InstagramPost) => {
     setSelectedPost(post);
     setStage('products');
     setProducts(post.products || []);
@@ -127,34 +164,34 @@ export default function StudioPage() {
       id: Date.now(),
       name: '',
       imageUrl: '',
-      sellerLinks: []
+      sellerLinks: [] as SellerLink[]
     };
     setProducts([...products, newProduct]);
   };
 
-  const handleDeleteProduct = (id) => {
+  const handleDeleteProduct = (id: StudioProduct['id']) => {
     if (confirm('Delete this product? This action cannot be undone.')) {
       setProducts(products.filter(p => p.id !== id));
       const newErrors = { ...validationErrors };
-      delete newErrors[id];
+      delete newErrors[String(id)];
       setValidationErrors(newErrors);
     }
   };
 
-  const handleUpdateProduct = (id, field, value) => {
+  const handleUpdateProduct = (id: StudioProduct['id'], field: 'name' | 'imageUrl', value: string) => {
     setProducts(products.map(p => 
       p.id === id ? { ...p, [field]: value } : p
     ));
     // Clear validation error for this field
-    if (validationErrors[id]) {
+    if (validationErrors[String(id)]) {
       setValidationErrors({
         ...validationErrors,
-        [id]: validationErrors[id].filter(e => !e.startsWith(field))
+        [id]: validationErrors[String(id)].filter((validationError: string) => !validationError.startsWith(field))
       });
     }
   };
 
-  const handleAddSellerLink = (productId) => {
+  const handleAddSellerLink = (productId: StudioProduct['id']) => {
     setProducts(products.map(p => 
       p.id === productId 
         ? { ...p, sellerLinks: [...(p.sellerLinks || []), { platform: 'amazon', url: '' }] }
@@ -162,7 +199,7 @@ export default function StudioPage() {
     ));
   };
 
-  const handleDeleteSellerLink = (productId, linkIndex) => {
+  const handleDeleteSellerLink = (productId: StudioProduct['id'], linkIndex: number) => {
     setProducts(products.map(p => 
       p.id === productId 
         ? { ...p, sellerLinks: p.sellerLinks.filter((_, idx) => idx !== linkIndex) }
@@ -170,7 +207,7 @@ export default function StudioPage() {
     ));
   };
 
-  const handleUpdateSellerLink = (productId, linkIndex, field, value) => {
+  const handleUpdateSellerLink = (productId: StudioProduct['id'], linkIndex: number, field: keyof SellerLink, value: string) => {
     setProducts(products.map(p => 
       p.id === productId 
         ? {
@@ -184,7 +221,7 @@ export default function StudioPage() {
   };
 
   const validateProducts = () => {
-    const errors = {};
+    const errors: ValidationErrors = {};
     let hasErrors = false;
 
     products.forEach(product => {
@@ -228,6 +265,10 @@ export default function StudioPage() {
   };
 
   const handleSaveProducts = async () => {
+    if (!selectedPost) {
+      setError('Select an Instagram post before adding products.');
+      return;
+    }
     if (!validateProducts()) {
       setError('Please fix validation errors before saving');
       return;
@@ -239,17 +280,15 @@ export default function StudioPage() {
       setError('');
       setSuccess('');
 
-      // Convert products to backend format
+      // The backend attaches these products to the selected Instagram post and
+      // creates/reuses its public Dream4Deals reel page.
       const productsData = products.map(p => ({
-        id: String(p.id),
         name: p.name,
-        category: 'Product',
-        price: 0,
-        image: p.imageUrl,
-        seller_links: p.sellerLinks
+        imageUrl: p.imageUrl,
+        sellerLinks: p.sellerLinks,
       }));
 
-      const res = await fetch(`${API_URL}/api/reels/${selectedPost.slug}/products`, {
+      const res = await fetch(`${API_URL}/api/creator/posts/${selectedPost.id}/products`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -260,26 +299,33 @@ export default function StudioPage() {
       
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to save products');
+      if (data.reelSlug) {
+        setSelectedPost({ ...selectedPost, reelSlug: data.reelSlug });
+      }
       
       setSuccess('✅ Products saved successfully!');
       setTimeout(() => {
         setStage('automation');
       }, 1500);
     } catch (e) {
-      setError(e.message);
+      setError(messageFromError(e));
     } finally {
       setLoading(false);
     }
   };
 
   const handleSaveAutomation = async () => {
+    if (!selectedPost?.reelSlug) {
+      setError('Save the products first so Dream4Deals can create this post’s public reel page.');
+      return;
+    }
     const token = localStorage.getItem('dream4deals_token');
     try {
       setLoading(true);
       setError('');
       setSuccess('');
 
-      const res = await fetch(`${API_URL}/api/reels/${selectedPost.slug}/automation`, {
+      const res = await fetch(`${API_URL}/api/reels/${selectedPost.reelSlug}/automation`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -287,6 +333,8 @@ export default function StudioPage() {
         },
         body: JSON.stringify({
           enabled: automation.enabled,
+          replyComments: true,
+          replyDms: true,
           triggers: ['LINK', 'SHOP', 'BUY'],
           replyTemplate: 'Hi {name}! Check out this reel and shop the look: {url}'
         })
@@ -300,7 +348,43 @@ export default function StudioPage() {
         setPosts([]);
       }, 1500);
     } catch (e) {
-      setError(e.message);
+      setError(messageFromError(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleTestAutomation = async () => {
+    if (!selectedPost?.instagramMediaId) {
+      setError('Select an Instagram post before testing automation.');
+      return;
+    }
+    const token = localStorage.getItem('dream4deals_token');
+    try {
+      setLoading(true);
+      setError('');
+      setSuccess('');
+      const res = await fetch(`${API_URL}/api/webhooks/test`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          kind: 'comment',
+          text: 'LINK',
+          mediaId: selectedPost.instagramMediaId,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Automation test failed.');
+      const result = data.results?.[0];
+      if (result?.status !== 'simulated') {
+        throw new Error(`Automation test result: ${result?.status || 'unknown'}`);
+      }
+      setSuccess(`Test passed: LINK matched the rule for ${result.reelSlug}. No Instagram message was sent.`);
+    } catch (e) {
+      setError(messageFromError(e, 'Automation test failed.'));
     } finally {
       setLoading(false);
     }
@@ -586,6 +670,8 @@ export default function StudioPage() {
                 {/* Test Button */}
                 <button
                   type="button"
+                  onClick={handleTestAutomation}
+                  disabled={loading}
                   className="w-full bg-yellow-600 hover:bg-yellow-700 text-white font-bold py-3 rounded-lg"
                 >
                   🧪 Test Automation

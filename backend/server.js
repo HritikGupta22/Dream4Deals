@@ -18,10 +18,12 @@ const {
 } = require('./data');
 const {
   validSignature, matchesTrigger, applyTemplate,
-  collectIncoming, sendPublicCommentReply, sendDirectMessage,
-  isAlreadyProcessed, markProcessed, buildTestPayload,
+  collectIncoming, sendPublicCommentReply, sendPrivateCommentReply, sendDirectMessage,
+  isAlreadyProcessed, claimEvent, markProcessed, buildTestPayload,
 } = require('./instagram');
 const store = require('./store');
+const { ensureInstagramSubscriptions } = require('./instagram-subscriptions');
+const { startCommentRecovery } = require('./comment-recovery');
 const { getDashboard, getAnalytics } = store;
 
 const PORT       = Number(process.env.PORT) || 3000;
@@ -41,8 +43,9 @@ function logInfo(message, meta = {}) {
   appendLog(LOG_FILE, {
     timestamp: new Date().toISOString(),
     level: 'INFO',
-    message,
     ...meta,
+    ...(meta.message ? { errorMessage: meta.message } : {}),
+    message,
   });
 }
 
@@ -50,8 +53,9 @@ function logError(message, meta = {}) {
   const entry = {
     timestamp: new Date().toISOString(),
     level: 'ERROR',
-    message,
     ...meta,
+    ...(meta.message ? { errorMessage: meta.message } : {}),
+    message,
   };
   appendLog(ERROR_FILE, entry);
   appendLog(LOG_FILE, entry);
@@ -61,6 +65,7 @@ function logError(message, meta = {}) {
 const rateLimitMap = new Map(); // { key: [timestamp, count] }
 const accountLockoutMap = new Map(); // { email: lockedUntil }
 const csrfTokens = new Map(); // { token: expiry }
+const instagramOAuthStates = new Map(); // { state: expiry }
 const AFFILIATE_DOMAINS = ['amazon.in', 'amazon.com', 'flipkart.com', 'myntra.com', 'meesho.com'];
 
 function generateCsrfToken() {
@@ -222,54 +227,147 @@ async function resolveReel(job) {
 }
 
 async function handleJob(job) {
+  logInfo('Instagram automation job received', {
+    kind: job.kind,
+    eventId: job.eventId,
+    mediaId: job.mediaId,
+    source: job.source || (job.testMode ? 'simulation' : 'webhook'),
+    eventIdPresent: Boolean(job.eventId),
+    mediaIdPresent: Boolean(job.mediaId),
+    senderIdPresent: Boolean(job.senderId),
+    textLength: String(job.text || '').length,
+    testMode: Boolean(job.testMode),
+  });
   // Idempotency — skip if already processed
-  if (job.eventId && await isAlreadyProcessed(job.eventId)) {
+  if (job.eventId && !(await claimEvent(job.eventId, job.testMode ? `test-${job.kind}` : job.kind))) {
     await store.logEvent('Duplicate skipped', job.eventId);
-    return;
+    logInfo('Instagram automation skipped: duplicate event', { kind: job.kind });
+    return { status: 'duplicate' };
   }
-
-  const settings = await store.getSettings();
-  if (!settings.enabled)                                 { await store.logEvent('Automation off', job.text || job.kind); return; }
-  if (job.kind === 'comment' && !settings.replyComments) { await store.logEvent('Comment replies disabled', job.text || ''); return; }
-  if (job.kind === 'dm'      && !settings.replyDms)      { await store.logEvent('DM replies disabled', job.text || ''); return; }
-  if (!matchesTrigger(job.text, settings.triggers))      { await store.logEvent(`${job.kind} ignored`, job.text || 'No text'); return; }
 
   const reel = await resolveReel(job);
   if (!reel) { await store.logEvent('Reel not mapped', job.mediaId || 'No media ID'); return; }
+  const reelRule = reel.creatorId
+    ? await store.getReelAutomation(reel.creatorId, reel.slug)
+    : null;
+  const settings = reelRule || await store.getSettings();
+  logInfo('Instagram automation rule selected', {
+    reelSlug: reel.slug,
+    perReelRule: Boolean(reelRule),
+    enabled: Boolean(settings.enabled),
+  });
+  const creatorHandle = String(reel.creator?.handle || '').replace(/^@/, '').toLowerCase();
+  const senderUsername = String(job.username || '').replace(/^@/, '').toLowerCase();
+  const authoredByCreator =
+    (reel.creatorInstagramUserId && String(job.senderId || '') === String(reel.creatorInstagramUserId)) ||
+    (creatorHandle && senderUsername && creatorHandle === senderUsername);
+  if (job.kind === 'comment' && authoredByCreator) {
+    await store.logEvent('Creator comment ignored', reel.slug);
+    logInfo('Instagram automation skipped: creator-authored comment', { reelSlug: reel.slug });
+    return { status: 'creator_comment_ignored', reelSlug: reel.slug };
+  }
+  if (!settings.enabled)                                 { await store.logEvent('Automation off', job.kind); return { status: 'automation_off' }; }
+  if (job.kind === 'comment' && !settings.replyComments) { await store.logEvent('Comment replies disabled', reel.slug); return { status: 'comments_disabled' }; }
+  if (job.kind === 'dm'      && !settings.replyDms)      { await store.logEvent('DM replies disabled', reel.slug); return { status: 'dms_disabled' }; }
+  if (!matchesTrigger(job.text, settings.triggers))      { await store.logEvent(`${job.kind} ignored`, 'Trigger not matched'); return { status: 'trigger_not_matched' }; }
   if (job.senderId) await store.rememberUserReel(job.senderId, reel.slug);
 
   const dmMessage = applyTemplate(settings.replyTemplate, {
     name: job.username, url: reelUrl(reel.slug), title: reel.title,
   });
+  if (job.testMode) {
+    await store.logEvent('Automation test passed', `${job.kind} -> ${reel.slug}`);
+    logInfo('Instagram automation rule simulation passed', { kind: job.kind, reelSlug: reel.slug, deliveryTested: false });
+    return { status: 'simulated', reelSlug: reel.slug };
+  }
+  const creatorToken = reel.creatorId ? await store.getInstagramToken(reel.creatorId) : null;
+  const connection = { accountId: reel.creatorInstagramUserId, accessToken: creatorToken };
+  if (!creatorToken || !reel.creatorInstagramUserId) {
+    await store.logEvent('Automation connection missing', reel.slug);
+    logInfo('Instagram automation skipped: creator connection missing', { reelSlug: reel.slug });
+    return { status: 'creator_connection_missing', reelSlug: reel.slug };
+  }
 
   if (job.kind === 'comment') {
-    if (!job.commentId) { await store.logEvent('Reply skipped', 'No comment ID'); return; }
+    const context = { eventId: job.eventId, commentId: job.commentId, mediaId: job.mediaId, reelSlug: reel.slug, accountId: connection.accountId };
+    if (!job.commentId) {
+      logInfo('Instagram private reply skipped: missing comment ID', context);
+      return { status: 'missing_comment_id', reelSlug: reel.slug };
+    }
+
+    const started = Date.now();
+    logInfo('Instagram private reply requested', { ...context, textLength: dmMessage.length });
+
+    let privateResult = null;
     try {
-      await sendPublicCommentReply(job.commentId, 'Link has been sent to your DM! 📩');
+      privateResult = await sendPrivateCommentReply(job.commentId, dmMessage, connection);
+      if (privateResult.sent) {
+        logInfo('Instagram private reply accepted by Meta', { ...context, messageId: privateResult.data?.message_id, recipientId: privateResult.data?.recipient_id, durationMs: Date.now() - started });
+        await store.logEvent('DM sent after comment', reel.slug);
+      } else {
+        logError('Instagram private reply not sent', { ...context, reason: privateResult.reason });
+        await store.logEvent('DM after comment not sent', privateResult.reason);
+      }
+    } catch (e) {
+      logError('Instagram private reply failed', { ...context, ...e.meta, errorMessage: e.message, durationMs: Date.now() - started });
+      await store.logEvent('DM after comment failed', e.message);
+    }
+
+    // Always attempt the public comment reply so the commenter still receives a
+    // visible confirmation even when Meta rejects the private DM for a non-follower.
+    try {
+      logInfo('Instagram public reply requested', context);
+      const reply = await sendPublicCommentReply(job.commentId, 'Link sent! Check your DMs or Message Requests.', connection.accessToken);
+      if (!reply.sent) throw new Error(reply.reason);
+      logInfo('Instagram public reply accepted by Meta', { ...context, replyId: reply.data?.id });
       await store.logEvent('Comment public reply sent', reel.slug);
-    } catch (e) { await store.logEvent('Comment public reply failed', e.message); }
-    if (!job.senderId) { await store.logEvent('DM skipped', 'No sender ID'); return; }
-    const r = await sendDirectMessage(job.senderId, dmMessage);
-    await store.logEvent(r.sent ? 'DM sent after comment' : 'DM queued (Meta not configured)', r.sent ? reel.slug : r.reason);
-    await markProcessed(job.eventId, 'comment');
-    return;
+      return { status: 'sent', publicReply: 'sent', reelSlug: reel.slug };
+    } catch (e) {
+      logError('Instagram public reply failed', { ...context, ...e.meta, errorMessage: e.message });
+      await store.logEvent('Comment public reply failed', e.message);
+      return { status: privateResult?.sent ? 'sent' : 'dm_failed', publicReply: 'failed', reelSlug: reel.slug };
+    }
   }
 
   if (!job.senderId) { await store.logEvent('DM skipped', 'No sender ID'); return; }
-  const r = await sendDirectMessage(job.senderId, dmMessage);
-  await store.logEvent(r.sent ? 'Instagram DM sent' : 'DM queued (Meta not configured)', r.sent ? reel.slug : r.reason);
-  await markProcessed(job.eventId, 'dm');
+  try {
+    const r = await sendDirectMessage(job.senderId, dmMessage, connection);
+    await store.logEvent(r.sent ? 'Instagram DM sent' : 'DM queued (Meta not configured)', r.sent ? reel.slug : r.reason);
+    return { status: r.sent ? 'sent' : 'not_sent', reelSlug: reel.slug };
+  } catch (e) {
+    logError('Instagram DM failed', { errorMessage: e.message, ...e.meta, eventId: job.eventId, reelSlug: reel.slug });
+    await store.logEvent('Instagram DM failed', e.message);
+    return { status: 'dm_failed', reelSlug: reel.slug };
+  }
 }
 
 async function handleInstagramWebhook(req, res) {
   const raw = (await readBody(req)).toString('utf8');
-  if (!validSignature(raw, req.headers['x-hub-signature-256'], process.env.META_APP_SECRET))
+  logInfo('Instagram webhook received', { bytes: Buffer.byteLength(raw), signaturePresent: Boolean(req.headers['x-hub-signature-256']) });
+  if (!validSignature(raw, req.headers['x-hub-signature-256'], process.env.META_APP_SECRET)) {
+    logError('Instagram webhook rejected: invalid signature');
     return sendJson(res, 403, { error: 'Invalid webhook signature' });
+  }
   const payload = parseJson(raw);
-  if (!payload) return sendJson(res, 400, { error: 'Invalid JSON' });
+  if (!payload || !Array.isArray(payload.entry)) {
+    logError('Instagram webhook rejected: invalid payload');
+    return sendJson(res, 400, { error: 'Invalid webhook payload' });
+  }
   sendJson(res, 200, { received: true });
-  for (const job of collectIncoming(payload)) {
-    try { await handleJob(job); } catch (e) { await store.logEvent('Instagram reply failed', e.message); }
+  const jobs = collectIncoming(payload);
+  logInfo('Instagram webhook accepted', { jobs: jobs.length, object: payload.object,
+    accountIds: payload.entry.map(entry => entry.id),
+    fields: [...new Set(payload.entry.flatMap(entry => (entry.changes || []).map(change => change.field)))],
+    messagingEvents: payload.entry.reduce((count, entry) => count + (entry.messaging || []).length, 0),
+  });
+  for (const job of jobs) {
+    try {
+      const result = await handleJob(job);
+      logInfo('Instagram automation job completed', { kind: job.kind, eventId: job.eventId, ...result });
+    } catch (e) {
+      logError('Instagram automation job failed', { errorMessage: e.message, ...e.meta, kind: job.kind, eventId: job.eventId });
+      await store.logEvent('Instagram reply failed', e.message);
+    }
   }
 }
 
@@ -290,6 +388,7 @@ http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/webhooks/instagram') {
       const valid = url.searchParams.get('hub.mode') === 'subscribe' &&
                     url.searchParams.get('hub.verify_token') === process.env.META_VERIFY_TOKEN;
+      logInfo('Instagram webhook verification', { accepted: valid });
       if (!valid) return sendJson(res, 403, { error: 'Webhook verification failed' });
       res.writeHead(200, { 'Content-Type': 'text/plain' });
       return res.end(url.searchParams.get('hub.challenge') || '');
@@ -430,11 +529,18 @@ http.createServer(async (req, res) => {
     // ── Instagram OAuth (New) ──────────────────────────────────────────────
     if (req.method === 'GET' && url.pathname === '/api/auth/instagram-oauth-url') {
       const appId = process.env.META_APP_ID;
+      if (!appId) return sendJson(res, 503, { error: 'Instagram OAuth is not configured.' });
       const frontendBaseUrl = process.env.FRONTEND_BASE_URL || 'http://localhost:3000';
       const redirectUri = `${frontendBaseUrl.replace(/\/$/, '')}/auth/instagram-callback`;
       const scope = 'instagram_business_basic,instagram_business_manage_messages,instagram_business_manage_comments';
+      const state = crypto.randomBytes(32).toString('hex');
+      const now = Date.now();
+      for (const [key, expiresAt] of instagramOAuthStates) {
+        if (expiresAt <= now) instagramOAuthStates.delete(key);
+      }
+      instagramOAuthStates.set(state, now + 10 * 60 * 1000);
       
-      const oauthUrl = `https://www.instagram.com/oauth/authorize?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scope)}&response_type=code`;
+      const oauthUrl = `https://www.instagram.com/oauth/authorize?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scope)}&response_type=code&state=${state}`;
       logInfo('Instagram OAuth URL generated', { redirectUri, appIdPresent: Boolean(appId) });
       
       return sendJson(res, 200, { oauth_url: oauthUrl });
@@ -442,28 +548,34 @@ http.createServer(async (req, res) => {
 
     if (req.method === 'POST' && url.pathname === '/api/auth/instagram-callback') {
       const data = parseJson((await readBody(req)).toString()) || {};
+      logInfo('Instagram callback request received', {
+        codePresent: Boolean(data.code),
+        statePresent: Boolean(data.state),
+        originPresent: Boolean(req.headers.origin),
+      });
       if (!data.code) {
-        logError('Instagram callback missing authorization code', { headers: req.headers, body: data });
+        logError('Instagram callback missing authorization code');
         return sendJson(res, 400, { error: 'Authorization code required.' });
+      }
+      const state = String(data.state || '');
+      const expiresAt = instagramOAuthStates.get(state);
+      instagramOAuthStates.delete(state);
+      if (!expiresAt || expiresAt < Date.now()) {
+        logInfo('Instagram callback rejected: invalid or expired state');
+        return sendJson(res, 400, { error: 'This Instagram connection request expired. Please try again.' });
       }
       
       try {
-        // Get user from bearer token (creator must be signed in)
-        const token = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '');
-        const user = await store.userForToken(token);
-        if (!user) {
-          logError('Instagram callback called without valid session', { tokenPresent: Boolean(token) });
-          return sendJson(res, 401, { error: 'Please sign in first.' });
-        }
-        
         // Exchange authorization code for Instagram access token
         const appId = process.env.META_APP_ID;
         const appSecret = process.env.META_APP_SECRET;
         const frontendBaseUrl = process.env.FRONTEND_BASE_URL || 'http://localhost:3000';
         const redirectUri = `${frontendBaseUrl.replace(/\/$/, '')}/auth/instagram-callback`;
-        logInfo('Instagram callback start', { userId: user.id, redirectUri, appIdPresent: Boolean(appId), appSecretPresent: Boolean(appSecret) });
+        logInfo('Instagram callback start', { redirectUri, appIdPresent: Boolean(appId), appSecretPresent: Boolean(appSecret) });
         
-        const response = await fetch('https://graph.instagram.com/oauth/access_token', {
+        // Instagram Login authorization codes are exchanged on api.instagram.com.
+        // graph.instagram.com is used only after an Instagram User token is issued.
+        const response = await fetch('https://api.instagram.com/oauth/access_token', {
           method: 'POST',
           headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
           body: new URLSearchParams({
@@ -481,21 +593,61 @@ http.createServer(async (req, res) => {
             status: response.status,
             tokenData,
             redirectUri,
-            userId: user.id,
           });
           throw new Error(tokenData.error_description || 'Failed to exchange authorization code');
         }
-        
-        // Save Instagram token for this creator
-        await store.createInstagramToken(user.id, tokenData.access_token);
+        logInfo('Instagram authorization code exchanged successfully');
+
+        const longLivedTokenResponse = await fetch(
+          `https://graph.instagram.com/v25.0/access_token?grant_type=ig_exchange_token&client_secret=${encodeURIComponent(appSecret)}&access_token=${encodeURIComponent(tokenData.access_token)}`
+        );
+        const longLivedTokenData = await longLivedTokenResponse.json();
+
+        if (!longLivedTokenResponse.ok || !longLivedTokenData.access_token) {
+          throw new Error(longLivedTokenData.error?.message || 'Failed to upgrade Instagram access token.');
+        }
+
+        const finalAccessToken = longLivedTokenData.access_token;
+        logInfo('Instagram long-lived token acquired successfully', {
+          expiresIn: longLivedTokenData.expires_in,
+          tokenExpiresInSeconds: longLivedTokenData.expires_in,
+        });
+
+        const profileResponse = await fetch(
+          `https://graph.instagram.com/v25.0/me?fields=id,username&access_token=${encodeURIComponent(finalAccessToken)}`
+        );
+        const profile = await profileResponse.json();
+        if (!profileResponse.ok || !(profile.id || profile.user_id)) {
+          throw new Error(profile.error?.message || 'Unable to identify the connected Instagram account.');
+        }
+        logInfo('Instagram profile retrieved successfully', { usernamePresent: Boolean(profile.username) });
+
+        const user = await store.createOrUpdateInstagramCreator({
+          instagramUserId: profile.id || profile.user_id,
+          username: profile.username,
+        });
+        await store.createInstagramToken(user.id, finalAccessToken);
         logInfo('Instagram token saved successfully', { userId: user.id });
+        logInfo('Instagram webhook subscription check started', { userId: user.id });
+        try {
+          const subscription = await ensureInstagramSubscriptions({
+            accountId: profile.id || profile.user_id, accessToken: tokenData.access_token,
+          });
+          logInfo('Instagram webhook subscriptions verified', { userId: user.id, ...subscription });
+        } catch (e) {
+          logError('Instagram webhook subscription setup failed', { userId: user.id, ...e.meta, errorMessage: e.message });
+          throw new Error('Instagram authorization was saved, but webhook setup failed. Reconnect Instagram to retry.');
+        }
         
-        return sendJson(res, 200, { message: 'Instagram connected successfully.' });
+        return sendJson(res, 200, {
+          message: 'Instagram connected successfully.',
+          user,
+          token: await store.createSession(user.id),
+        });
       } catch (e) {
         logError('Instagram callback error', {
           message: e.message,
           stack: e.stack,
-          userId: (await store.userForToken(String(req.headers.authorization || '').replace(/^Bearer\s+/i, '')))?.id,
         });
         return sendJson(res, 400, { error: e.message });
       }
@@ -529,12 +681,9 @@ http.createServer(async (req, res) => {
         const igToken = await store.getInstagramToken(user.id);
         if (!igToken) return sendJson(res, 400, { error: 'Instagram not connected.' });
         
-        const accountId = process.env.META_INSTAGRAM_ACCOUNT_ID;
-        const metaAccessToken = process.env.META_ACCESS_TOKEN;
-        
         // Fetch posts from Meta API
         const response = await fetch(
-          `https://graph.instagram.com/${accountId}/media?fields=id,caption,media_type,media_url&access_token=${metaAccessToken}`
+          `https://graph.instagram.com/v25.0/me/media?fields=id,caption,media_type,media_url&access_token=${encodeURIComponent(igToken)}`
         );
         
         if (!response.ok) {
@@ -561,6 +710,40 @@ http.createServer(async (req, res) => {
     }
 
     // ── Dashboard ──────────────────────────────────────────────────────────────
+    if (req.method === 'POST' && /^\/api\/creator\/posts\/[^/]+\/products$/.test(url.pathname)) {
+      const user = await requireCreator(req, res); if (!user) return;
+      const postId = url.pathname.split('/')[4];
+      const data = parseJson((await readBody(req)).toString()) || {};
+      if (!Array.isArray(data.products) || data.products.length === 0) {
+        return sendJson(res, 400, { error: 'Add at least one product before saving.' });
+      }
+      for (const product of data.products) {
+        if (!String(product.name || '').trim() || !String(product.imageUrl || '').trim()) {
+          return sendJson(res, 400, { error: 'Product name and image URL are required.' });
+        }
+        if (!Array.isArray(product.sellerLinks) || product.sellerLinks.length === 0) {
+          return sendJson(res, 400, { error: 'At least one affiliate link is required per product.' });
+        }
+        if (product.sellerLinks.length > 10) {
+          return sendJson(res, 400, { error: 'A product can have at most 10 affiliate links.' });
+        }
+        for (const link of product.sellerLinks) {
+          const affiliateUrl = String(link.url || '');
+          if (!affiliateUrl.startsWith('https://') || !validateUrl(affiliateUrl)) {
+            return sendJson(res, 400, { error: 'Each affiliate link must be HTTPS and use an approved retailer domain.' });
+          }
+        }
+      }
+      try {
+        const result = await store.saveProductsForPost(user.id, postId, data.products);
+        await store.logEvent('Products saved', `${result.reelSlug} - ${result.saved} products`);
+        return sendJson(res, 201, { ok: true, ...result });
+      } catch (e) {
+        logError('Creator post product save failed', { message: e.message, userId: user.id });
+        return sendJson(res, 400, { error: e.message });
+      }
+    }
+
     if (req.method === 'GET' && url.pathname === '/api/dashboard') {
       const user = await requireCreator(req, res); if (!user) return;
       return sendJson(res, 200, await getDashboard(user.id));
@@ -817,6 +1000,7 @@ http.createServer(async (req, res) => {
 
     // ── Local webhook test simulator (dev only) ──────────────────────────────
     if (req.method === 'POST' && url.pathname === '/api/webhooks/test') {
+      const user = await requireCreator(req, res); if (!user) return;
       const data = parseJson((await readBody(req)).toString()) || {};
       const payload = buildTestPayload({
         kind:      data.kind || 'comment',
@@ -826,10 +1010,17 @@ http.createServer(async (req, res) => {
         senderId:  data.senderId || 'sim-sender-001',
         username:  data.username || 'testuser',
       });
+      const results = [];
       for (const job of collectIncoming(payload)) {
-        try { await handleJob(job); } catch (e) { await store.logEvent('Test sim failed', e.message); }
+        try {
+          results.push(await handleJob({ ...job, testMode: true }));
+        } catch (e) {
+          logError('Automation test failed', { message: e.message, kind: job.kind, userId: user.id });
+          await store.logEvent('Test sim failed', e.message);
+          results.push({ status: 'failed', error: e.message });
+        }
       }
-      return sendJson(res, 200, { simulated: true, payload });
+      return sendJson(res, 200, { simulated: true, results });
     }
 
     sendJson(res, 404, { error: 'Not found' });
@@ -849,4 +1040,10 @@ http.createServer(async (req, res) => {
     frontendBaseUrl: process.env.FRONTEND_BASE_URL,
   });
   console.log(`Dream4Deals backend running at http://localhost:${PORT}`);
+  startCommentRecovery({
+    mode: process.env.INSTAGRAM_COMMENT_RECOVERY_MODE || 'live',
+    handleJob,
+    logInfo,
+    logError,
+  });
 });
