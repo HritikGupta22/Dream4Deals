@@ -9,4 +9,5 @@ Thumbs.db
 frontend/.next/
 frontend/out/
 /*.md
+backend/storage/*
 backend/storage/backend.log
