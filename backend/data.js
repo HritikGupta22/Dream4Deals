@@ -27,7 +27,7 @@ async function getReel(slug) {
   const productIds = prodRes.rows.map((product) => product.id);
   const linksRes = productIds.length
     ? await pool.query(
-      `SELECT product_id, platform, affiliate_url
+      `SELECT product_id, platform, affiliate_url, price::float AS price
        FROM seller_links WHERE product_id = ANY($1::text[])`,
       [productIds]
     )
@@ -35,7 +35,7 @@ async function getReel(slug) {
   const linksByProduct = new Map();
   for (const link of linksRes.rows) {
     const links = linksByProduct.get(link.product_id) || [];
-    links.push({ platform: link.platform, url: link.affiliate_url });
+    links.push({ platform: link.platform, url: link.affiliate_url, price: link.price });
     linksByProduct.set(link.product_id, links);
   }
 

@@ -16,28 +16,28 @@ function mockApi(t, responses) {
 const subscribed = fields => ({ data: [{ id: 'our-app', subscribed_fields: fields }] });
 
 test('repairs missing comments while preserving existing messaging fields and verifies result', async t => {
-  const calls = mockApi(t, [subscribed(['messages', 'messaging_seen']), { success: true }, subscribed(['messages', 'messaging_seen', 'comments'])]);
+  const calls = mockApi(t, [subscribed(['messages', 'messaging_seen']), { success: true }, subscribed(['messages', 'messaging_seen', 'comments', 'messaging_postbacks'])]);
   const result = await ensureInstagramSubscriptions(connection);
   assert.equal(result.updated, true);
   assert.deepEqual(result.previousFields, ['messages', 'messaging_seen']);
-  assert.equal(JSON.parse(calls[1].body).subscribed_fields, 'messages,messaging_seen,comments');
+  assert.equal(JSON.parse(calls[1].body).subscribed_fields, 'messages,messaging_seen,comments,messaging_postbacks');
   assert.deepEqual(calls.map(call => call.method), ['GET', 'POST', 'GET']);
   assert.ok(calls.every(call => !call.url.includes('secret')));
 });
 
 test('does not mutate a complete subscription', async t => {
-  const calls = mockApi(t, [subscribed(['comments', 'messages'])]);
+  const calls = mockApi(t, [subscribed(['comments', 'messages', 'messaging_postbacks'])]);
   assert.equal((await ensureInstagramSubscriptions(connection)).updated, false);
   assert.equal(calls.length, 1);
 });
 
 test('handles Instagram subscription app IDs differing from the OAuth client ID', async t => {
-  mockApi(t, [{ data: [{ id: 'instagram-app-id', subscribed_fields: ['comments', 'messages'] }] }]);
+  mockApi(t, [{ data: [{ id: 'instagram-app-id', subscribed_fields: ['comments', 'messages', 'messaging_postbacks'] }] }]);
   assert.equal((await ensureInstagramSubscriptions(connection)).subscriptionAppId, 'instagram-app-id');
 });
 
 test('does not guess when multiple unfamiliar apps are returned', async t => {
-  const calls = mockApi(t, [{ data: [{ id: 'other-app', subscribed_fields: ['comments', 'messages'] }, { id: 'another-app', subscribed_fields: ['messages'] }] }]);
+  const calls = mockApi(t, [{ data: [{ id: 'other-app', subscribed_fields: ['comments', 'messages', 'messaging_postbacks'] }, { id: 'another-app', subscribed_fields: ['messages'] }] }]);
   await assert.rejects(ensureInstagramSubscriptions(connection), /META_WEBHOOK_APP_ID/);
   assert.equal(calls.length, 1);
 });

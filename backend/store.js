@@ -409,6 +409,7 @@ async function getCreatorInstagramPosts(creatorId) {
   return Promise.all(res.rows.map(async (row) => ({
     id: row.id,
     instagramMediaId: row.instagram_media_id,
+    reelSlug: await ensurePostReel(creatorId, row),
     caption: row.caption,
     imageUrl: row.image_url,
     postType: row.post_type,
@@ -425,8 +426,9 @@ async function syncInstagramPosts(creatorId, posts) {
        VALUES ($1, $2, $3, $4, $5)
        ON CONFLICT (creator_id, instagram_media_id) DO UPDATE
        SET caption=$3, image_url=$4, updated_at=NOW()`,
-      [creatorId, post.id, post.caption || '', post.media_url || '', post.media_type || 'CAROUSEL']
+      [creatorId, post.id, post.caption || '', (post.media_type === 'VIDEO' ? post.thumbnail_url : post.media_url) || '', post.media_type || 'CAROUSEL']
     );
+    await pool.query('UPDATE reels SET poster=$1 WHERE instagram_media_id=$2 AND creator_id=$3', [(post.media_type === 'VIDEO' ? post.thumbnail_url : post.media_url) || '', post.id, creatorId]);
   }
 }
 
@@ -441,7 +443,7 @@ async function getCreatorPostProducts(postId) {
   const ids = res.rows.map((product) => product.id);
   const linksRes = ids.length
     ? await pool.query(
-      `SELECT product_id, platform, affiliate_url
+      `SELECT product_id, platform, affiliate_url, price::float AS price
        FROM seller_links WHERE product_id = ANY($1::text[])`,
       [ids]
     )
@@ -449,7 +451,7 @@ async function getCreatorPostProducts(postId) {
   const linksByProduct = new Map();
   for (const link of linksRes.rows) {
     const links = linksByProduct.get(link.product_id) || [];
-    links.push({ platform: link.platform, url: link.affiliate_url });
+    links.push({ platform: link.platform, url: link.affiliate_url, price: link.price });
     linksByProduct.set(link.product_id, links);
   }
   return res.rows.map((product) => ({
@@ -461,58 +463,81 @@ async function getCreatorPostProducts(postId) {
 }
 
 async function saveProductsForPost(creatorId, postId, products) {
-  const postRes = await pool.query(
-    `SELECT id, instagram_media_id, caption, image_url
-     FROM creator_posts WHERE id=$1 AND creator_id=$2`,
-    [postId, creatorId]
-  );
-  const post = postRes.rows[0];
-  if (!post) throw new Error('Instagram post not found. Sync your posts and try again.');
-
-  let reelRes = await pool.query(
-    'SELECT id, slug FROM reels WHERE instagram_media_id=$1',
-    [post.instagram_media_id]
-  );
-  let reel = reelRes.rows[0];
-  if (!reel) {
-    const slug = `instagram-${post.instagram_media_id}`.toLowerCase().replace(/[^a-z0-9-]+/g, '-');
-    const title = post.caption.trim().slice(0, 100) || 'Instagram product edit';
-    reelRes = await pool.query(
-      `INSERT INTO reels (slug, instagram_media_id, title, caption, poster, video_url, creator_id)
-       VALUES ($1,$2,$3,$4,$5,'',$6) RETURNING id, slug`,
-      [slug, post.instagram_media_id, title, post.caption, post.image_url, creatorId]
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const postRes = await client.query(
+      `SELECT id, instagram_media_id, caption, image_url
+       FROM creator_posts WHERE id=$1 AND creator_id=$2`,
+      [postId, creatorId]
     );
-    reel = reelRes.rows[0];
-  }
+    const post = postRes.rows[0];
+    if (!post) throw new Error('Instagram post not found. Sync your posts and try again.');
 
-  const existing = await pool.query(
-    'SELECT id FROM products WHERE creator_post_id=$1',
-    [postId]
-  );
-  const existingIds = existing.rows.map((product) => product.id);
-  if (existingIds.length) {
-    await pool.query('DELETE FROM seller_links WHERE product_id = ANY($1::text[])', [existingIds]);
-  }
-  await pool.query('DELETE FROM products WHERE creator_post_id=$1', [postId]);
-  
-  // Insert new products
-  for (const product of products) {
-    const productId = `prod-${crypto.randomBytes(12).toString('hex')}`;
-    
-    await pool.query(
-      `INSERT INTO products (id, reel_id, name, category, price, image, creator_id, creator_post_id, image_url)
-       VALUES ($1, $2, $3, 'uncategorized', 0, $4, $5, $6, $4)`,
-      [productId, reel.id, product.name, product.imageUrl, creatorId, postId]
+    let reelRes = await client.query(
+      'SELECT id, slug FROM reels WHERE instagram_media_id=$1',
+      [post.instagram_media_id]
     );
-    
-    // Insert seller links
-    for (const link of product.sellerLinks || []) {
-      await pool.query(
-        `INSERT INTO seller_links (product_id, platform, affiliate_url)
-         VALUES ($1, $2, $3)`,
-        [productId, link.platform, link.url]
+    let reel = reelRes.rows[0];
+    if (!reel) {
+      const slug = `instagram-${post.instagram_media_id}`.toLowerCase().replace(/[^a-z0-9-]+/g, '-');
+      const title = post.caption.trim().slice(0, 100) || 'Instagram product edit';
+      reelRes = await client.query(
+        `INSERT INTO reels (slug, instagram_media_id, title, caption, poster, video_url, creator_id)
+         VALUES ($1,$2,$3,$4,$5,'',$6) RETURNING id, slug`,
+        [slug, post.instagram_media_id, title, post.caption, post.image_url, creatorId]
       );
+      reel = reelRes.rows[0];
     }
+
+    const existing = await client.query(
+      'SELECT id FROM products WHERE creator_post_id=$1',
+      [postId]
+    );
+    const existingIds = existing.rows.map((product) => product.id);
+    if (existingIds.length) {
+      await client.query('DELETE FROM seller_links WHERE product_id = ANY($1::text[])', [existingIds]);
+    }
+    await client.query('DELETE FROM products WHERE creator_post_id=$1', [postId]);
+
+    // Insert new products
+    for (const product of products) {
+      const productId = `prod-${crypto.randomBytes(12).toString('hex')}`;
+      const prices = (product.sellerLinks || []).map(link => Number(link.price)).filter(price => Number.isFinite(price) && price > 0);
+      const startingPrice = prices.length ? Math.min(...prices) : 0;
+
+      await client.query(
+        `INSERT INTO products (id, reel_id, name, category, price, image, creator_id, creator_post_id, image_url)
+         VALUES ($1, $2, $3, 'uncategorized', $7, $4, $5, $6, $4)`,
+        [productId, reel.id, product.name.trim(), product.imageUrl.trim(), creatorId, postId, startingPrice]
+      );
+
+      // Insert seller links
+      for (const link of product.sellerLinks || []) {
+        await client.query(
+          `INSERT INTO seller_links (product_id, platform, affiliate_url, price)
+           VALUES ($1, $2, $3, $4)`,
+          [productId, link.platform, link.url.trim(), Number(link.price) > 0 ? Number(link.price) : null]
+        );
+      }
+    }
+    await client.query('COMMIT');
+    return { reelSlug: reel.slug, saved: products.length };
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
   }
-  return { reelSlug: reel.slug, saved: products.length };
+}
+
+async function ensurePostReel(creatorId, post) {
+  const slug = `instagram-${post.instagram_media_id}`.toLowerCase().replace(/[^a-z0-9-]+/g, '-');
+  await pool.query(
+    `INSERT INTO reels (slug, instagram_media_id, title, caption, poster, video_url, creator_id)
+     VALUES ($1,$2,$3,$4,$5,'',$6) ON CONFLICT (instagram_media_id) DO NOTHING`,
+    [slug, post.instagram_media_id, (post.caption || '').slice(0, 100) || 'Instagram finds', post.caption || '', post.image_url || '', creatorId]
+  );
+  const result = await pool.query('SELECT slug FROM reels WHERE instagram_media_id=$1 AND creator_id=$2', [post.instagram_media_id, creatorId]);
+  return result.rows[0]?.slug || null;
 }

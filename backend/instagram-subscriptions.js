@@ -1,4 +1,4 @@
-const REQUIRED_FIELDS = ['comments', 'messages'];
+const REQUIRED_FIELDS = ['comments', 'messages', 'messaging_postbacks'];
 
 async function subscriptionRequest(accountId, accessToken, method = 'GET', fields) {
   const version = process.env.META_GRAPH_API_VERSION || 'v25.0';
@@ -41,7 +41,7 @@ async function ensureInstagramSubscriptions({ accountId, accessToken, appId = pr
   const afterApp = selectApp(await subscriptionRequest(accountId, accessToken));
   const after = afterApp?.subscribed_fields || [];
   if (REQUIRED_FIELDS.some(field => !after.includes(field))) {
-    throw new Error('Instagram webhook verification failed: comments/messages subscription is missing');
+    throw new Error('Instagram webhook verification failed: comments/messages/messaging_postbacks subscription is missing');
   }
   return { accountId, subscriptionAppId: afterApp.id, fields: after, previousFields: before, updated: true };
 }

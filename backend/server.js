@@ -1,3 +1,4 @@
+const { fetchRetailerPrice, enrichProducts } = require('./retailer-prices');
 require('dotenv').config({ path: require('path').join(__dirname, '.env') });
 
 const http = require('http');
@@ -66,7 +67,7 @@ const rateLimitMap = new Map(); // { key: [timestamp, count] }
 const accountLockoutMap = new Map(); // { email: lockedUntil }
 const csrfTokens = new Map(); // { token: expiry }
 const instagramOAuthStates = new Map(); // { state: expiry }
-const AFFILIATE_DOMAINS = ['amazon.in', 'amazon.com', 'flipkart.com', 'myntra.com', 'meesho.com'];
+const AFFILIATE_DOMAINS = ['amazon.in', 'amazon.com', 'flipkart.com', 'myntra.com', 'meesho.com', 'fktr.in', 'amzn.in', 'amzn.to'];
 
 function generateCsrfToken() {
   const token = crypto.randomBytes(32).toString('hex');
@@ -129,7 +130,7 @@ function validateEmail(email) {
 function validateUrl(url, allowedDomains = AFFILIATE_DOMAINS) {
   try {
     const u = new URL(url);
-    return allowedDomains.some(domain => u.hostname.includes(domain));
+    return u.protocol === 'https:' && !u.username && !u.password && allowedDomains.some(domain => u.hostname === domain || u.hostname.endsWith('.' + domain));
   } catch {
     return false;
   }
@@ -256,11 +257,11 @@ async function handleJob(job) {
     perReelRule: Boolean(reelRule),
     enabled: Boolean(settings.enabled),
   });
-  const creatorHandle = String(reel.creator?.handle || '').replace(/^@/, '').toLowerCase();
+  const creatorHandleLower = String(reel.creator?.handle || '').replace(/^@/, '').toLowerCase();
   const senderUsername = String(job.username || '').replace(/^@/, '').toLowerCase();
   const authoredByCreator =
     (reel.creatorInstagramUserId && String(job.senderId || '') === String(reel.creatorInstagramUserId)) ||
-    (creatorHandle && senderUsername && creatorHandle === senderUsername);
+    (creatorHandleLower && senderUsername && creatorHandleLower === senderUsername);
   if (job.kind === 'comment' && authoredByCreator) {
     await store.logEvent('Creator comment ignored', reel.slug);
     logInfo('Instagram automation skipped: creator-authored comment', { reelSlug: reel.slug });
@@ -269,12 +270,30 @@ async function handleJob(job) {
   if (!settings.enabled)                                 { await store.logEvent('Automation off', job.kind); return { status: 'automation_off' }; }
   if (job.kind === 'comment' && !settings.replyComments) { await store.logEvent('Comment replies disabled', reel.slug); return { status: 'comments_disabled' }; }
   if (job.kind === 'dm'      && !settings.replyDms)      { await store.logEvent('DM replies disabled', reel.slug); return { status: 'dms_disabled' }; }
-  if (!matchesTrigger(job.text, settings.triggers))      { await store.logEvent(`${job.kind} ignored`, 'Trigger not matched'); return { status: 'trigger_not_matched' }; }
+
+  if (job.kind === 'dm' && job.quickReplyPayload) {
+    const payload = job.quickReplyPayload;
+    if (payload !== 'visit_profile' && payload !== 'follow_confirmed') {
+      await store.logEvent('DM ignored', 'Unsupported quick reply payload');
+      return { status: 'unsupported_quick_reply', reelSlug: reel.slug };
+    }
+  } else if (!matchesTrigger(job.text, settings.triggers)) {
+    await store.logEvent(`${job.kind} ignored`, 'Trigger not matched');
+    return { status: 'trigger_not_matched' };
+  }
+
   if (job.senderId) await store.rememberUserReel(job.senderId, reel.slug);
 
   const dmMessage = applyTemplate(settings.replyTemplate, {
     name: job.username, url: reelUrl(reel.slug), title: reel.title,
   });
+  const reminder = {
+    text: 'Hey there! Glad you\'re here 😊 Please visit my profile and tap follow to continue 😬',
+    buttons: [
+      { type: 'web_url', title: '👤 Visit Profile', url: `https://www.instagram.com/${creatorHandleLower}/` },
+      { type: 'postback', title: '✅ I’m Following', payload: 'follow_confirmed' },
+    ],
+  };
   if (job.testMode) {
     await store.logEvent('Automation test passed', `${job.kind} -> ${reel.slug}`);
     logInfo('Instagram automation rule simulation passed', { kind: job.kind, reelSlug: reel.slug, deliveryTested: false });
@@ -295,29 +314,31 @@ async function handleJob(job) {
       return { status: 'missing_comment_id', reelSlug: reel.slug };
     }
 
+    if (!creatorHandleLower) {
+      await store.logEvent('Reminder DM skipped', 'Creator Instagram handle is missing');
+      return { status: 'profile_not_configured', reelSlug: reel.slug };
+    }
     const started = Date.now();
-    logInfo('Instagram private reply requested', { ...context, textLength: dmMessage.length });
+    logInfo('Instagram reminder DM requested', { ...context, textLength: reminder.text.length });
 
-    let privateResult = null;
+    let reminderResult = null;
     try {
-      privateResult = await sendPrivateCommentReply(job.commentId, dmMessage, connection);
-      if (privateResult.sent) {
-        logInfo('Instagram private reply accepted by Meta', { ...context, messageId: privateResult.data?.message_id, recipientId: privateResult.data?.recipient_id, durationMs: Date.now() - started });
-        await store.logEvent('DM sent after comment', reel.slug);
+      reminderResult = await sendPrivateCommentReply(job.commentId, reminder.text, connection, { buttons: reminder.buttons });
+      if (reminderResult.sent) {
+        logInfo('Instagram reminder DM accepted by Meta', { ...context, messageId: reminderResult.data?.message_id, recipientId: reminderResult.data?.recipient_id, durationMs: Date.now() - started });
+        await store.logEvent('Reminder DM sent after comment', reel.slug);
       } else {
-        logError('Instagram private reply not sent', { ...context, reason: privateResult.reason });
-        await store.logEvent('DM after comment not sent', privateResult.reason);
+        logError('Instagram reminder DM not sent', { ...context, reason: reminderResult.reason });
+        await store.logEvent('Reminder DM after comment not sent', reminderResult.reason);
       }
     } catch (e) {
-      logError('Instagram private reply failed', { ...context, ...e.meta, errorMessage: e.message, durationMs: Date.now() - started });
-      await store.logEvent('DM after comment failed', e.message);
+      logError('Instagram reminder DM failed', { ...context, ...e.meta, errorMessage: e.message, durationMs: Date.now() - started });
+      await store.logEvent('Reminder DM after comment failed', e.message);
     }
 
-    // Always attempt the public comment reply so the commenter still receives a
-    // visible confirmation even when Meta rejects the private DM for a non-follower.
     try {
       logInfo('Instagram public reply requested', context);
-      const reply = await sendPublicCommentReply(job.commentId, 'Link sent! Check your DMs or Message Requests.', connection.accessToken);
+      const reply = await sendPublicCommentReply(job.commentId, 'Thanks! Check your DM, your link is waiting 💌✨😊', connection.accessToken);
       if (!reply.sent) throw new Error(reply.reason);
       logInfo('Instagram public reply accepted by Meta', { ...context, replyId: reply.data?.id });
       await store.logEvent('Comment public reply sent', reel.slug);
@@ -325,7 +346,30 @@ async function handleJob(job) {
     } catch (e) {
       logError('Instagram public reply failed', { ...context, ...e.meta, errorMessage: e.message });
       await store.logEvent('Comment public reply failed', e.message);
-      return { status: privateResult?.sent ? 'sent' : 'dm_failed', publicReply: 'failed', reelSlug: reel.slug };
+      return { status: 'sent', publicReply: 'failed', reelSlug: reel.slug };
+    }
+  }
+
+  if (job.kind === 'dm' && job.quickReplyPayload) {
+    const payload = job.quickReplyPayload;
+    const senderId = job.senderId;
+    if (!senderId) { await store.logEvent('DM skipped', 'No sender ID'); return; }
+
+    if (payload === 'visit_profile') {
+      await store.logEvent('Instagram profile CTA clicked', reel.slug);
+      return { status: 'visit_profile_only', reelSlug: reel.slug, quickReplyPayload: payload };
+    }
+
+    if (payload === 'follow_confirmed') {
+      try {
+        const r = await sendDirectMessage(senderId, dmMessage, connection);
+        await store.logEvent(r.sent ? 'Instagram final DM sent after follow confirmation' : 'Final DM queued (Meta not configured)', r.sent ? reel.slug : r.reason);
+        return { status: r.sent ? 'sent' : 'not_sent', reelSlug: reel.slug, quickReplyPayload: payload };
+      } catch (e) {
+        logError('Instagram final DM failed after follow confirmation', { errorMessage: e.message, ...e.meta, eventId: job.eventId, reelSlug: reel.slug });
+        await store.logEvent('Instagram final DM failed', e.message);
+        return { status: 'dm_failed', reelSlug: reel.slug, quickReplyPayload: payload };
+      }
     }
   }
 
@@ -683,7 +727,7 @@ http.createServer(async (req, res) => {
         
         // Fetch posts from Meta API
         const response = await fetch(
-          `https://graph.instagram.com/v25.0/me/media?fields=id,caption,media_type,media_url&access_token=${encodeURIComponent(igToken)}`
+          `https://graph.instagram.com/v25.0/me/media?fields=id,caption,media_type,media_url,thumbnail_url&access_token=${encodeURIComponent(igToken)}`
         );
         
         if (!response.ok) {
@@ -710,6 +754,12 @@ http.createServer(async (req, res) => {
     }
 
     // ── Dashboard ──────────────────────────────────────────────────────────────
+    if (req.method === 'POST' && url.pathname === '/api/creator/retailer-price') {
+      const user = await requireCreator(req, res); if (!user) return;
+      const data = parseJson((await readBody(req)).toString()) || {};
+      return sendJson(res, 200, await fetchRetailerPrice(data.url));
+    }
+
     if (req.method === 'POST' && /^\/api\/creator\/posts\/[^/]+\/products$/.test(url.pathname)) {
       const user = await requireCreator(req, res); if (!user) return;
       const postId = url.pathname.split('/')[4];
@@ -728,14 +778,17 @@ http.createServer(async (req, res) => {
           return sendJson(res, 400, { error: 'A product can have at most 10 affiliate links.' });
         }
         for (const link of product.sellerLinks) {
-          const affiliateUrl = String(link.url || '');
+          const affiliateUrl = String(link.url || '').trim();
+          if (link.price != null && link.price !== '' && (!Number.isFinite(Number(link.price)) || Number(link.price) <= 0)) {
+            return sendJson(res, 400, { error: 'Seller price must be a positive number, or left blank.' });
+          }
           if (!affiliateUrl.startsWith('https://') || !validateUrl(affiliateUrl)) {
             return sendJson(res, 400, { error: 'Each affiliate link must be HTTPS and use an approved retailer domain.' });
           }
         }
       }
       try {
-        const result = await store.saveProductsForPost(user.id, postId, data.products);
+        const result = await store.saveProductsForPost(user.id, postId, await enrichProducts(data.products));
         await store.logEvent('Products saved', `${result.reelSlug} - ${result.saved} products`);
         return sendJson(res, 201, { ok: true, ...result });
       } catch (e) {
@@ -777,6 +830,12 @@ http.createServer(async (req, res) => {
     // ── Reels ─────────────────────────────────────────────────────────────────
     if (req.method === 'GET' && url.pathname === '/api/reels')
       return sendJson(res, 200, await mappingRows());
+
+    if (req.method === 'GET' && /^\/api\/reels\/[^/]+\/prices$/.test(url.pathname)) {
+      const reel = await getReel(url.pathname.split('/')[3]);
+      if (!reel) return sendJson(res, 404, { error: 'Reel not found' });
+      return sendJson(res, 200, { products: await enrichProducts(reel.products) });
+    }
 
     if (req.method === 'GET' && /^\/api\/reels\/[^/]+$/.test(url.pathname)) {
       const slug = url.pathname.split('/')[3];

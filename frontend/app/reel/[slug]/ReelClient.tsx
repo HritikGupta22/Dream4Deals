@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import Image from "next/image";
 import { apiFetch, apiPost, money } from "@/lib/api";
 import type { Offer, PlatformOffers, Reel, Seller } from "@/lib/types";
@@ -19,8 +19,8 @@ function normalizeOffers(data: PlatformOffers[] | Offer[] | null | undefined): P
     const seller = {
       seller: offer.seller || platform,
       price: Number(offer.price ?? 0),
-      rating: offer.rating || "★★★★★",
-      delivery: offer.delivery || "2-3 days",
+      rating: offer.rating || "",
+      delivery: offer.delivery || "",
       link: offer.link || "#",
     };
 
@@ -34,7 +34,7 @@ function normalizeOffers(data: PlatformOffers[] | Offer[] | null | undefined): P
 
   return Array.from(grouped.values()).map((group) => ({
     platform: group.platform,
-    sellers: [...group.sellers].sort((a, b) => a.price - b.price),
+    sellers: [...group.sellers].sort((a, b) => (a.price > 0 ? a.price : Infinity) - (b.price > 0 ? b.price : Infinity)),
   }));
 }
 
@@ -50,57 +50,76 @@ function sellerLinksToOffers(product: Reel["products"][number]): PlatformOffers[
     grouped[platform].push({
       seller: link.seller || platform,
       price: Number(link.price ?? 0),
-      rating: link.rating || "★★★★★",
-      delivery: link.delivery || "2-3 days",
+      rating: link.rating || "",
+      delivery: link.delivery || "",
       link: link.url || "#",
     });
   });
 
   return Object.entries(grouped).map(([platform, sellers]) => ({
     platform,
-    sellers: [...sellers].sort((a, b) => a.price - b.price),
+    sellers: [...sellers].sort((a, b) => (a.price > 0 ? a.price : Infinity) - (b.price > 0 ? b.price : Infinity)),
   }));
 }
 
 export default function ReelClient({ reel }: { reel: Reel }) {
   const [offers, setOffers] = useState<PlatformOffers[]>([]);
-  const [selected, setSelected] = useState<{ name: string; image: string; sellerLinks?: any[] } | null>(null);
+  const [selected, setSelected] = useState<Reel["products"][number] | null>(null);
   const [loading, setLoading] = useState(false);
 
+  const requestId = useRef(0);
+  const selectedId = useRef<string | null>(null);
+  const [products, setProducts] = useState(reel.products);
+  useEffect(() => {
+    const controller = new AbortController();
+    apiFetch<{ products: Reel['products'] }>(`/api/reels/${encodeURIComponent(reel.slug)}/prices`, { signal: controller.signal })
+      .then(data => {
+        if (controller.signal.aborted || !Array.isArray(data.products)) return;
+        setProducts(data.products);
+        const activeProduct = data.products.find(product => product.id === selectedId.current);
+        if (activeProduct?.sellerLinks?.length) setOffers(sellerLinksToOffers(activeProduct));
+      }).catch(() => {});
+    return () => controller.abort();
+  }, [reel.slug]);
+
   async function openComparison(id: string) {
-    const product = reel.products.find((p) => p.id === id)!;
+    const product = products.find((p) => p.id === id)!;
+    const request = ++requestId.current;
+    selectedId.current = id;
+    setSelected(product);
+    setOffers([]);
     setLoading(true);
+    setTimeout(() => document.getElementById("comparison")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+
+    if (product.sellerLinks?.length) {
+      setOffers(sellerLinksToOffers(product));
+      setLoading(false);
+      return;
+    }
 
     try {
       const data = await apiFetch<PlatformOffers[] | Offer[]>(`/api/offers/product/${id}`);
+      if (request !== requestId.current) return;
       const backendOffers = normalizeOffers(data);
 
       if (backendOffers.length > 0) {
-        setSelected({ name: product.name, image: product.image });
+        setSelected(product);
         setOffers(backendOffers);
       } else {
         const fallbackOffers = sellerLinksToOffers(product);
-        setSelected({
-          name: product.name,
-          image: product.image,
-          sellerLinks: product.sellerLinks,
-        });
+        setSelected(product);
         setOffers(fallbackOffers);
       }
 
-      setTimeout(() => document.getElementById("comparison")?.scrollIntoView({ behavior: "smooth", block: "center" }), 50);
     } catch (error) {
+      if (request !== requestId.current) return;
       console.error("Error fetching offers:", error);
 
       const fallbackOffers = sellerLinksToOffers(product);
-      setSelected({
-        name: product.name,
-        image: product.image,
-        sellerLinks: product.sellerLinks,
-      });
+      setSelected(product);
       setOffers(fallbackOffers);
     } finally {
-      setLoading(false);
+      if (request === requestId.current) setLoading(false);
     }
   }
 
@@ -108,7 +127,7 @@ export default function ReelClient({ reel }: { reel: Reel }) {
     const all: (Seller & { platform: string })[] = platforms.flatMap((g) =>
       (g.sellers ?? []).map((s) => ({ ...s, platform: g.platform }))
     );
-    const lowest = all.sort((a, b) => a.price - b.price)[0];
+    const lowest = all.filter(seller => Number.isFinite(seller.price) && seller.price > 0).sort((a, b) => (a.price > 0 ? a.price : Infinity) - (b.price > 0 ? b.price : Infinity))[0];
     return lowest ? `${lowest.platform}|${lowest.seller}|${lowest.price}` : "";
   }
 
@@ -116,113 +135,96 @@ export default function ReelClient({ reel }: { reel: Reel }) {
 
   return (
     <main>
-      {/* Hero */}
-      <section className="grid md:grid-cols-2 min-h-[600px]">
-        <div className="relative overflow-hidden bg-[#e8c7c4] min-h-[440px] md:min-h-[600px]">
-          <Image
-            src={reel.poster || "/placeholder.jpg"}
-            alt={reel.title}
-            fill
-            className="object-cover"
-            priority
-          />
-          <div className="absolute inset-0 bg-gradient-to-b from-transparent via-transparent to-black/50" />
-          <i className="not-italic absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[60px] h-[60px] bg-white/90 rounded-full flex items-center justify-center text-xl pl-1">▶</i>
-          <small className="absolute bottom-6 left-7 text-white text-[11px] z-10">◉ Original Reel</small>
+      <section className="reel-intro">
+        <div className="reel-cover relative overflow-hidden">
+          <Image src={reel.poster || "/placeholder.jpg"} alt={`Post by ${reel.creator.name}`} fill sizes="(max-width: 640px) 100vw, 420px" className="object-cover" priority />
+          <span className="absolute bottom-4 left-4 rounded-full bg-white/95 px-4 py-2 text-xs font-semibold">As seen on Instagram</span>
         </div>
-        <div className="px-[8%] py-[60px] md:px-[13%] md:py-[100px]">
-          <div className="border-b border-[#ebdfda] pb-4 mb-11">
-            <b className="block text-[13px]">{reel.creator.name}</b>
-            <small className="block text-[11px] text-[#716966] mt-1">{reel.creator.handle} · {reel.creator.followers}</small>
-          </div>
-          <p className="text-[11px] font-bold tracking-[1.5px] text-[#e96050] mb-3">THE EDIT</p>
-          <h1 className="font-serif text-[40px] md:text-[53px] leading-[1.08] tracking-[-1.5px] m-0">{reel.title}</h1>
-          <p className="text-[#716966] leading-relaxed max-w-[370px] my-6">
-            Every piece from this look, all in one place — with the best price shown first.
-          </p>
-          <a href="#shop" className="inline-block bg-[#241d1d] text-white px-5 py-3.5 text-[13px] font-bold no-underline">
-            Shop this reel ↓
-          </a>
-          <em className="block border-t border-[#ebdfda] mt-11 pt-4 text-[#716966] text-[12px] not-italic">
-            &ldquo;{reel.caption}&rdquo;
-          </em>
+        <div className="flex items-center gap-3 px-5 py-4">
+          <span className="flex h-10 w-10 items-center justify-center rounded-full bg-[#f9e4dc] text-[#a64234] font-bold" aria-hidden="true">{reel.creator.name.charAt(0)}</span>
+          <div><p className="text-sm font-semibold">{reel.creator.name}</p><p className="text-xs text-[#716966]">{reel.creator.handle}</p></div>
+          <a href="#shop" className="ml-auto text-sm font-semibold text-[#a64234]">Explore finds &darr;</a>
         </div>
       </section>
 
       {/* Products */}
-      <section id="shop" className="px-[7vw] py-[95px]">
-        <p className="text-[11px] font-bold tracking-[1.5px] text-[#e96050] mb-3">SHOP THE LOOK</p>
-        <h2 className="font-serif text-[40px] tracking-[-1.5px] m-0">Tagged in this reel</h2>
+      <section id="shop" className="shop-section">
+        <p className="text-[11px] font-bold tracking-[1.5px] text-[#e96050] mb-3">YOUR NEXT GREAT FIND</p>
+        <h2 className="font-serif text-[30px] md:text-[40px] tracking-[-1px] m-0">Spotted it. Shop it.</h2>
         <p className="text-[#716966] text-[13px] mt-2 mb-8">Tap an item to compare prices and sellers across trusted stores.</p>
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6">
-          {reel.products.map((p) => (
-            <article
+        <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-6">
+          {products.map((p) => (
+            <button
+              type="button"
+              aria-label={`Compare sellers for ${p.name}`}
               key={p.id}
               onClick={() => openComparison(p.id)}
-              className="bg-white cursor-pointer transition-transform hover:-translate-y-1"
+              className="product-card bg-white text-left cursor-pointer transition-transform hover:-translate-y-1"
             >
-              <div className="relative h-[315px]">
-                <Image src={p.image} alt={p.name} fill className="object-cover" />
+              <div className="relative aspect-[4/5] bg-[#f5f1ed]">
+                <Image src={p.image} alt={p.name} fill sizes="(max-width: 640px) 45vw, (max-width: 1024px) 43vw, 28vw" className="object-contain" />
               </div>
-              <div className="p-4">
+              <div className="p-3 sm:p-4">
                 <h3 className="text-[14px] m-0">{p.name}</h3>
-                <p className="text-[12px] text-[#716966] my-1.5">{p.category}</p>
-                <b className="text-[14px]">from {money(p.price)}</b>
-                <span className="float-right text-[#e96050] text-[12px] font-bold">Compare →</span>
+                <p className="text-[12px] text-[#716966] my-1.5">{p.category === "uncategorized" ? "" : p.category}</p>
+                <b className="block text-[14px]">{p.price > 0 ? `From ${money(p.price)}` : "Check price"}</b>
+                <span className="block mt-2 text-[#a64234] text-[12px] font-bold">Compare →</span>
               </div>
-            </article>
+            </button>
           ))}
         </div>
       </section>
+
+      {reel.products.length === 0 && <p className="px-6 pb-12 text-center text-[#716966]">New finds are on their way. Check back soon.</p>}
 
       {/* Comparison panel */}
       {selected && (
         <section id="comparison" className="px-[5vw] md:px-[10vw] py-[65px] bg-[#fff0eb] grid md:grid-cols-[290px_1fr] gap-[30px] md:gap-[52px] relative">
           <button
-            onClick={() => setSelected(null)}
+            onClick={() => { requestId.current++; selectedId.current = null; setSelected(null); setLoading(false); }}
             className="absolute right-6 top-4 border-0 bg-transparent text-[30px] cursor-pointer"
             aria-label="Close"
           >×</button>
           <div className="relative h-[370px]">
-            <Image src={selected.image} alt={selected.name} fill className="object-cover" />
+            <Image src={selected.image} alt={selected.name} fill sizes="(max-width: 768px) 90vw, 290px" className="object-contain" />
           </div>
           <div>
             <p className="text-[11px] font-bold tracking-[1.5px] text-[#e96050] mb-3">COMPARE PRICES</p>
             <h2 className="font-serif text-[34px] tracking-[-1.5px] mb-4">{selected.name}</h2>
-            
+
             {loading ? (
               <p className="text-[13px] text-[#716966]">Loading seller options...</p>
             ) : offers.length === 0 ? (
               <p className="text-[13px] text-[#716966]">No seller options available for this product yet.</p>
             ) : (
               <>
-                <p className="text-[13px] bg-white p-3 mb-2">✦ The lowest available offer is highlighted.</p>
+                <p className="text-[13px] bg-white rounded-xl p-3 mb-2">{best ? "The lowest listed price is highlighted. Confirm the latest price at the store." : "Choose a store to see its current price and availability."}</p>
                 {offers.map((group) => (
                   <div key={group.platform} className="mt-5">
                     <h3 className="text-[14px] font-bold mb-2 capitalize">{group.platform}</h3>
-                    {[...(group.sellers ?? [])].sort((a, b) => a.price - b.price).map((offer) => {
+                    {[...(group.sellers ?? [])].sort((a, b) => (a.price > 0 ? a.price : Infinity) - (b.price > 0 ? b.price : Infinity)).map((offer) => {
                       const key = `${group.platform}|${offer.seller}|${offer.price}`;
                       const redirect = `/api/redirect?platform=${encodeURIComponent(group.platform)}&product=${encodeURIComponent(selected.name)}&url=${encodeURIComponent(offer.link)}`;
                       return (
                         <div
-                          key={key}
-                          className={`bg-white p-3 my-2 grid grid-cols-[1fr_1fr_auto] items-center gap-2 ${key === best ? "outline outline-1 outline-[#e8a196] bg-green-50" : ""}`}
+                          key={`${key}|${offer.link}`}
+                          className={`bg-white p-3 my-2 grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 ${key === best ? "outline outline-1 outline-[#e8a196] bg-green-50" : ""}`}
                         >
                           <div>
                             <b className="block text-[13px]">{offer.seller}{key === best ? " · Lowest price" : ""}</b>
-                            <small className="text-[#716966] text-[11px]">☆ {offer.rating}</small>
+                            {offer.rating && <small className="text-[#716966] text-[11px]">{offer.rating}</small>}
                           </div>
-                          <small className="text-[#716966] text-[11px]">{offer.delivery}</small>
+
                           <div className="text-right">
-                            <strong className="block text-[15px]">{offer.price > 0 ? money(offer.price) : "Add price"}</strong>
+                            <strong className="block text-[15px]">{offer.price > 0 ? money(offer.price) : "Check price"}</strong>
                             <a
                               href={redirect}
                               target="_blank"
                               rel="noreferrer"
-                              onClick={() => apiPost("/api/click", { product: selected.name, platform: group.platform, seller: offer.seller })}
+                              onClick={() => apiPost("/api/click", { product: selected.name, platform: group.platform, seller: offer.seller }).catch(() => {})}
                               className="block bg-[#241d1d] text-white no-underline px-2 py-1.5 text-[11px] mt-1 text-center hover:bg-[#3a2f2f]"
                             >
-                              Buy now
+                              Visit store
                             </a>
                           </div>
                         </div>

@@ -20,13 +20,13 @@ function harness(failPrivate = false, failPublic = false) {
     },
   });
   const source = fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8');
-  const settings = { enabled: true, replyComments: true, triggers: ['link'], replyTemplate: '{{url}}' };
+  const settings = { enabled: true, replyComments: true, replyDms: true, triggers: ['link'], replyTemplate: '{{url}}' };
   const context = {
     ...instagram.exports,
     logInfo: (message, data) => logs.push({ message, ...data }),
     logError: (message, data) => logs.push({ message, ...data }),
     claimEvent: async id => { if (claimed.has(id)) return false; claimed.add(id); return true; },
-    resolveReel: async () => ({ slug: 'reel', creatorId: 'creator', creatorInstagramUserId: 'account' }),
+    resolveReel: async () => ({ slug: 'reel', creatorId: 'creator', creator: { handle: '@dream4deal' }, creatorInstagramUserId: 'account' }),
     reelUrl: () => 'https://example.com/reel',
     store: { getReelAutomation: async () => settings, rememberUserReel: async () => {}, getInstagramToken: async () => 'creator-token', logEvent: async () => {} },
   };
@@ -35,18 +35,23 @@ function harness(failPrivate = false, failPublic = false) {
   return { calls, logs, api: instagram.exports, run: (job = {}) => context.handleJob({ kind: 'comment', eventId: 'comment', commentId: 'comment', text: 'link', ...job }) };
 }
 
-test('comment private reply uses comment ID without sender/follower dependency, then confirms using creator token', async () => {
+test('comment reminder DM uses comment ID without sender/follower dependency, then sends public follow-up', async () => {
   const h = harness();
   assert.equal((await h.run()).status, 'sent');
   assert.equal(h.calls.length, 2);
   assert.equal(h.calls[0].url, 'https://graph.instagram.com/v25.0/account/messages');
   assert.deepEqual(h.calls[0].body.recipient, { comment_id: 'comment' });
-  assert.equal(h.calls[0].body.message.text, 'https://example.com/reel');
+  assert.match(h.calls[0].body.message.attachment.payload.text, /Please visit my profile and tap follow to continue/i);
+  assert.equal(h.calls[0].body.message.quick_replies, undefined);
+  assert.deepEqual(h.calls[0].body.message.attachment.payload.buttons, [
+    { type: 'web_url', title: '👤 Visit Profile', url: 'https://www.instagram.com/dream4deal/' },
+    { type: 'postback', title: '✅ I’m Following', payload: 'follow_confirmed' },
+  ]);
   assert.equal(h.calls[1].url, 'https://graph.instagram.com/v25.0/comment/replies');
   assert.ok(h.calls.every(call => call.token === 'Bearer creator-token'));
   assert.ok(h.logs.some(log => log.messageId === 'message-123'));
 });
-test('private reply rejection still sends a public comment reply and preserves diagnostics', async () => {
+test('reminder DM rejection still sends a public comment reply and preserves diagnostics', async () => {
   const h = harness(true);
   const result = await h.run();
   assert.equal(result.status, 'sent');
@@ -54,7 +59,7 @@ test('private reply rejection still sends a public comment reply and preserves d
   assert.equal(h.calls.length, 2);
   assert.equal(h.calls[0].url, 'https://graph.instagram.com/v25.0/account/messages');
   assert.equal(h.calls[1].url, 'https://graph.instagram.com/v25.0/comment/replies');
-  const failure = h.logs.find(log => log.message === 'Instagram private reply failed');
+  const failure = h.logs.find(log => log.message === 'Instagram reminder DM failed');
   assert.equal(failure.code, 10);
   assert.equal(failure.subcode, 2534022);
   assert.equal(failure.traceId, 'trace-123');
@@ -104,5 +109,24 @@ test('late webhook after recovery cannot send the same comment twice', async () 
   const h = harness();
   assert.equal((await h.run({ source: 'comment_recovery' })).status, 'sent');
   assert.equal((await h.run({ source: 'webhook' })).status, 'duplicate');
-  assert.equal(h.calls.length, 2); // one private message and its public confirmation
+  assert.equal(h.calls.length, 2); // reminder DM plus public confirmation
+});
+
+test('legacy profile click sends nothing and follow confirmation still sends the final link', async () => {
+  const h = harness();
+  assert.equal((await h.run({ kind: 'dm', eventId: 'visit', senderId: 'user', quickReplyPayload: 'visit_profile' })).status, 'visit_profile_only');
+  assert.equal(h.calls.length, 0);
+  const jobs = h.api.collectIncoming({ entry: [{ messaging: [{ sender: { id: 'user' }, postback: { mid: 'confirm', payload: 'follow_confirmed', title: "I'm Following" } }] }] });
+  assert.equal(jobs.length, 1);
+  assert.equal((await h.run(jobs[0])).status, 'sent');
+  assert.equal(h.calls.length, 1);
+  assert.equal(h.calls[0].body.message.text, 'https://example.com/reel');
+  assert.equal((await h.run(jobs[0])).status, 'duplicate');
+});
+
+test('changes format parses confirmation postbacks', () => {
+  const h = harness();
+  const jobs = h.api.collectIncoming({ entry: [{ changes: [{ field: 'messaging_postbacks', value: { sender: { id: 'user' }, postback: { mid: 'confirm', payload: 'follow_confirmed' } } }] }] });
+  assert.equal(jobs[0].eventId, 'confirm');
+  assert.equal(jobs[0].quickReplyPayload, 'follow_confirmed');
 });

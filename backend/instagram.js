@@ -91,15 +91,16 @@ function collectIncoming(payload) {
       }
 
       // DMs via changes
-      if (field === 'messages' || value.sender || value.message) {
+      if (field === 'messages' || field === 'messaging_postbacks' || value.sender || value.message) {
         const message = value.message || value;
         if (message.is_echo) continue;
         jobs.push({
           kind:     'dm',
-          eventId:  message.mid || null,
+          eventId:  message.mid || value.postback?.mid || null,
           text:     message.text || text,
           senderId: value.sender?.id || value.from?.id || null,
           mediaId:  attachmentMediaId(message) || value.media?.id || null,
+          quickReplyPayload: message.quick_reply?.payload || value.postback?.payload || null,
         });
       }
     }
@@ -107,13 +108,14 @@ function collectIncoming(payload) {
     // DMs via messaging array
     for (const item of entry.messaging || []) {
       const message = item.message || {};
-      if (!item.message || message.is_echo) continue;
+      if ((!item.message && !item.postback) || message.is_echo) continue;
       jobs.push({
         kind:     'dm',
-        eventId:  message.mid || null,
+        eventId:  message.mid || item.postback?.mid || null,
         text:     message.text || '',
         senderId: item.sender?.id || null,
         mediaId:  attachmentMediaId(message),
+        quickReplyPayload: message.quick_reply?.payload || item.postback?.payload || null,
       });
     }
   }
@@ -154,22 +156,44 @@ function sendPublicCommentReply(commentId, message, accessToken) {
 }
 
 // A comment author need not have opened a DM conversation or follow the creator.
-function sendPrivateCommentReply(commentId, message, { accountId, accessToken } = {}) {
+function sendPrivateCommentReply(commentId, message, { accountId, accessToken } = {}, options = {}) {
   if (!commentId || !accountId || !accessToken) {
     return Promise.resolve({ sent: false, reason: 'Private reply requires comment ID and creator connection' });
   }
-  return graphPost(`/${accountId}/messages`, {
-    recipient: { comment_id: commentId }, message: { text: message },
-  }, accessToken);
+
+  const payload = {
+    recipient: { comment_id: commentId },
+    message: options.buttons?.length
+      ? { attachment: { type: 'template', payload: { template_type: 'button', text: message, buttons: options.buttons } } }
+      : { text: message },
+  };
+
+  if (Array.isArray(options.quickReplies) && options.quickReplies.length) {
+    payload.message.quick_replies = options.quickReplies;
+  }
+
+  return graphPost(`/${accountId}/messages`, payload, accessToken);
 }
 
 // Private DM with the actual shopping link
-function sendDirectMessage(senderId, message, { accountId, accessToken } = {}) {
+function sendDirectMessage(senderId, message, { accountId, accessToken } = {}, options = {}) {
   const account = accountId || process.env.META_INSTAGRAM_ACCOUNT_ID;
   if (!account) return Promise.resolve({ sent: false, reason: 'META_INSTAGRAM_ACCOUNT_ID not configured' });
+
+  const payload = {
+    recipient: { id: senderId },
+    message: options.buttons?.length
+      ? { attachment: { type: 'template', payload: { template_type: 'button', text: message, buttons: options.buttons } } }
+      : { text: message },
+  };
+
+  if (Array.isArray(options.quickReplies) && options.quickReplies.length) {
+    payload.message.quick_replies = options.quickReplies;
+  }
+
   // Always target the connected Instagram account. The access token is carried
   // in the Authorization header and already identifies the sender.
-  return graphPost(`/${account}/messages`, { recipient: { id: senderId }, message: { text: message } }, accessToken);
+  return graphPost(`/${account}/messages`, payload, accessToken);
 }
 
 // ── Local test simulator ──────────────────────────────────────────────────────

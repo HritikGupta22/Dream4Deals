@@ -1,6 +1,8 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+
+import Image from 'next/image';
 
 const API_URL = '';
 
@@ -16,6 +18,8 @@ interface Creator {
 interface SellerLink {
   platform: string;
   url: string;
+  price?: number | null;
+  status?: 'loading' | 'fetched' | 'unavailable' | 'unsupported';
 }
 
 interface StudioProduct {
@@ -45,7 +49,7 @@ const validateProductName = (name: string) => name.trim().length > 0;
 const validateImageUrl = (url: string) => {
   try {
     new URL(url);
-    return url.toLowerCase().startsWith('http');
+    return ['http:', 'https:'].includes(new URL(url).protocol);
   } catch {
     return false;
   }
@@ -54,10 +58,10 @@ const validateImageUrl = (url: string) => {
 const validateSellerUrl = (url: string) => {
   try {
     const u = new URL(url);
-    const allowedDomains = ['amazon.in', 'amazon.com', 'flipkart.com', 'myntra.com', 'meesho.com'];
+    const allowedDomains = ['amazon.in', 'amazon.com', 'flipkart.com', 'myntra.com', 'meesho.com', 'fktr.in', 'amzn.in', 'amzn.to'];
     const isHttps = u.protocol === 'https:';
-    const isDomainAllowed = allowedDomains.some(domain => u.hostname.includes(domain));
-    return isHttps && isDomainAllowed;
+    const isDomainAllowed = allowedDomains.some(domain => u.hostname === domain || u.hostname.endsWith('.' + domain));
+    return isHttps && !u.username && !u.password && isDomainAllowed;
   } catch {
     return false;
   }
@@ -74,31 +78,6 @@ export default function StudioPage() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [validationErrors, setValidationErrors] = useState<ValidationErrors>({});
-
-  // Check if user is logged in
-  useEffect(() => {
-    const token = localStorage.getItem('dream4deals_token');
-    if (token) {
-      fetchUser(token);
-    }
-  }, []);
-
-  const fetchUser = async (token: string) => {
-    try {
-      const res = await fetch(`${API_URL}/api/auth/me`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (!res.ok) throw new Error('Not authenticated');
-      const data = await res.json();
-      setUser(data.user);
-      setStage('posts');
-      fetchPosts(token);
-    } catch {
-      localStorage.removeItem('dream4deals_token');
-      setUser(null);
-      setStage('auth');
-    }
-  };
 
   const handleInstagramOAuth = async () => {
     try {
@@ -121,7 +100,7 @@ export default function StudioPage() {
 
 
 
-  const fetchPosts = async (token: string | null) => {
+  const fetchPosts = useCallback(async (token: string | null) => {
     if (!token) throw new Error('Sign in required.');
     try {
       setLoading(true);
@@ -150,12 +129,36 @@ export default function StudioPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    const token = localStorage.getItem('dream4deals_token');
+    if (!token) return;
+    let active = true;
+    fetch(`${API_URL}/api/auth/me`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(async response => {
+        if (!response.ok) throw new Error('Not authenticated');
+        const data = await response.json();
+        if (!active) return;
+        setUser(data.user);
+        setStage('posts');
+        void fetchPosts(token);
+      })
+      .catch(() => {
+        if (!active) return;
+        localStorage.removeItem('dream4deals_token');
+        setUser(null);
+        setStage('auth');
+      });
+    return () => { active = false; };
+  }, [fetchPosts]);
 
   const handlePostSelect = (post: InstagramPost) => {
+    setError('');
+    setSuccess('');
     setSelectedPost(post);
     setStage('products');
-    setProducts(post.products || []);
+    setProducts(post.products?.length ? post.products : [{ id: `draft-${post.id}`, name: '', imageUrl: '', sellerLinks: [{ platform: 'flipkart', url: '' }] }]);
     setValidationErrors({});
   };
 
@@ -164,7 +167,7 @@ export default function StudioPage() {
       id: Date.now(),
       name: '',
       imageUrl: '',
-      sellerLinks: [] as SellerLink[]
+      sellerLinks: [{ platform: 'flipkart', url: '' }] as SellerLink[]
     };
     setProducts([...products, newProduct]);
   };
@@ -208,16 +211,33 @@ export default function StudioPage() {
   };
 
   const handleUpdateSellerLink = (productId: StudioProduct['id'], linkIndex: number, field: keyof SellerLink, value: string) => {
+    setValidationErrors(previous => ({ ...previous, [productId]: (previous[productId] || []).filter(error => !error.startsWith('sellerLink')) }));
+    setError('');
     setProducts(products.map(p => 
       p.id === productId 
         ? {
             ...p,
             sellerLinks: p.sellerLinks.map((link, idx) =>
-              idx === linkIndex ? { ...link, [field]: value } : link
+              idx === linkIndex ? { ...link, [field]: value, ...(field === 'url' ? { price: null, status: undefined } : {}) } : link
             )
           }
         : p
     ));
+  };
+
+  const lookupPrice = async (productId: StudioProduct['id'], index: number, url: string) => {
+    if (!validateSellerUrl(url)) return;
+    const update = (result: Partial<SellerLink>) => setProducts(previous => previous.map(product => product.id === productId
+      ? { ...product, sellerLinks: product.sellerLinks.map((link, i) => i === index && link.url === url ? { ...link, ...result } : link) } : product));
+    update({ status: 'loading', price: null });
+    try {
+      const response = await fetch('/api/creator/retailer-price', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('dream4deals_token')}` },
+        body: JSON.stringify({ url }),
+      });
+      if (!response.ok) throw new Error('Price lookup unavailable');
+      update(await response.json());
+    } catch { update({ status: 'unavailable', price: null }); }
   };
 
   const validateProducts = () => {
@@ -233,7 +253,7 @@ export default function StudioPage() {
       }
 
       if (!validateImageUrl(product.imageUrl)) {
-        productErrors.push('image: Valid image URL (HTTP/HTTPS) is required');
+        productErrors.push('imageUrl: Valid image URL (HTTP/HTTPS) is required');
         hasErrors = true;
       }
 
@@ -285,7 +305,7 @@ export default function StudioPage() {
       const productsData = products.map(p => ({
         name: p.name,
         imageUrl: p.imageUrl,
-        sellerLinks: p.sellerLinks,
+        sellerLinks: p.sellerLinks.map(link => ({ platform: link.platform, url: link.url.trim() })),
       }));
 
       const res = await fetch(`${API_URL}/api/creator/posts/${selectedPost.id}/products`, {
@@ -303,6 +323,7 @@ export default function StudioPage() {
         setSelectedPost({ ...selectedPost, reelSlug: data.reelSlug });
       }
       
+      setPosts(previous => previous.map(post => post.id === selectedPost.id ? { ...post, products, reelSlug: data.reelSlug || post.reelSlug } : post));
       setSuccess('✅ Products saved successfully!');
       setTimeout(() => {
         setStage('automation');
@@ -421,10 +442,10 @@ export default function StudioPage() {
   // Posts Grid Stage
   if (stage === 'posts') {
     return (
-      <div className="min-h-screen bg-gray-900 text-white p-6">
+      <div className="studio-shell min-h-screen text-white p-4 sm:p-6">
         <div className="max-w-6xl mx-auto">
           <div className="flex justify-between items-center mb-8">
-            <h1 className="text-3xl font-bold">Your Instagram Posts</h1>
+            <h1 className="text-3xl font-bold">{user?.name ? `${user.name}’s posts` : "Your Instagram Posts"}</h1>
             <div className="flex gap-3">
               <button
                 onClick={() => {
@@ -458,13 +479,20 @@ export default function StudioPage() {
               {posts.map(post => (
                 <div
                   key={post.id}
-                  onClick={() => handlePostSelect(post)}
-                  className="cursor-pointer hover:opacity-80 transition group"
+                  className="group"
                 >
                   <div className="relative bg-gray-800 rounded-lg overflow-hidden aspect-square">
-                    <img src={post.imageUrl || 'https://via.placeholder.com/300'} alt={post.caption} className="w-full h-full object-cover" />
-                    <div className="absolute inset-0 bg-black bg-opacity-50 opacity-0 group-hover:opacity-100 transition flex items-center justify-center">
-                      <span className="text-white font-bold">Add Products</span>
+                    <Image src={post.imageUrl || "/window.svg"} alt={post.caption || "Instagram post"} fill sizes="(max-width: 768px) 45vw, 25vw" className="object-cover" />
+
+                    <div className="post-actions absolute inset-0 grid grid-rows-[1fr_auto] bg-black/45 transition-opacity md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100">
+                      <button type="button" onClick={() => handlePostSelect(post)} className="text-white font-semibold flex items-center justify-center">
+                        <span className="rounded-xl border border-white/60 bg-black/25 px-4 py-3 backdrop-blur-sm">Add Products</span>
+                      </button>
+                      <a href={`/reel/${encodeURIComponent(post.reelSlug || `instagram-${post.instagramMediaId}`)}`}
+                        target="_blank" rel="noopener noreferrer"
+                        className="min-h-11 flex items-center justify-center gap-2 border-t border-white/20 bg-white/95 text-gray-900 text-xs font-semibold px-3 py-2">
+                        <span aria-hidden="true">&#8599;</span> Go to product link
+                      </a>
                     </div>
                   </div>
                   <p className="text-sm text-gray-400 mt-2 truncate">{post.caption}</p>
@@ -482,16 +510,16 @@ export default function StudioPage() {
   // Products Editor Stage
   if (stage === 'products') {
     return (
-      <div className="min-h-screen bg-gray-900 text-white p-6">
-        <div className="max-w-2xl mx-auto">
+      <div className="studio-shell min-h-screen text-white p-4 sm:p-6">
+        <div className="max-w-6xl mx-auto">
           <button onClick={() => setStage('posts')} className="mb-6 text-blue-400 hover:text-blue-300">← Back to Posts</button>
 
-          <div className="flex justify-between items-start mb-6">
+          <div className="flex justify-between items-start gap-4 mb-6">
             <div>
               <h1 className="text-3xl font-bold mb-2">Add Products to Reel</h1>
-              <p className="text-gray-400">{selectedPost?.caption}</p>
+              <p className="text-sm text-gray-400 line-clamp-2 mt-2">{selectedPost?.caption}</p>
             </div>
-            <div className="bg-blue-900 px-3 py-1 rounded text-sm">
+            <div className="bg-blue-900 px-3 py-1 rounded-full text-xs whitespace-nowrap">
               {products.length} product{products.length !== 1 ? 's' : ''}
             </div>
           </div>
@@ -499,23 +527,20 @@ export default function StudioPage() {
           {success && <div className="bg-green-900 text-green-200 p-3 rounded mb-4">{success}</div>}
           {error && <div className="bg-red-900 text-red-200 p-3 rounded mb-4">{error}</div>}
 
-          <div className="space-y-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-5 items-start">
             {products.map(product => (
-              <div key={product.id} className="bg-gray-800 p-6 rounded-lg border border-gray-700">
-                <div className="flex justify-between items-start mb-4">
-                  <h3 className="text-lg font-semibold">Product {products.indexOf(product) + 1}</h3>
-                  <button
-                    type="button"
-                    onClick={() => handleDeleteProduct(product.id)}
-                    className="text-red-400 hover:text-red-300 text-2xl leading-none"
-                    title="Delete product"
-                  >
-                    ✕
-                  </button>
-                </div>
-
+              <details key={product.id} open className="product-editor-card bg-gray-800/80 rounded-2xl border border-gray-700 shadow-lg overflow-hidden">
+                <summary className="cursor-pointer p-5 flex items-center gap-3 select-none">
+                  <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-purple-500/20 text-purple-200 font-semibold">{products.indexOf(product) + 1}</span>
+                  <span className="min-w-0 flex-1"><span className="block font-semibold truncate">{product.name || `Product ${products.indexOf(product) + 1}`}</span><span className="text-xs text-gray-400">{product.sellerLinks.length} store links{validationErrors[product.id]?.length ? ' - Needs attention' : ''}</span></span>
+                  <span className="expand-indicator text-xl text-purple-200" aria-hidden="true">+</span>
+                </summary>
+                <div className="p-4 sm:p-5 border-t border-gray-700">
+                <label htmlFor={`product-name-${product.id}`} className="block text-sm font-medium mb-2">Product name</label>
                 <input
+                  id={`product-name-${product.id}`}
                   type="text"
+                  aria-label="Product name"
                   placeholder="Product Name *"
                   value={product.name}
                   onChange={(e) => handleUpdateProduct(product.id, 'name', e.target.value)}
@@ -525,8 +550,11 @@ export default function StudioPage() {
                   <p className="text-red-400 text-sm mb-3">{validationErrors[product.id].find(e => e.startsWith('name'))}</p>
                 )}
 
+                <label htmlFor={`product-image-${product.id}`} className="block text-sm font-medium mb-2">Product image URL</label>
                 <input
+                  id={`product-image-${product.id}`}
                   type="url"
+                  aria-label="Product image URL"
                   placeholder="Product Image URL (HTTP/HTTPS) *"
                   value={product.imageUrl}
                   onChange={(e) => handleUpdateProduct(product.id, 'imageUrl', e.target.value)}
@@ -537,17 +565,18 @@ export default function StudioPage() {
                 )}
 
                 <div className="mb-4">
-                  <h3 className="text-lg font-semibold mb-3">Seller Links (Min 1, Max 10) *</h3>
+                  <h3 className="text-lg font-semibold mb-3">Where to buy</h3>
                   {validationErrors[product.id]?.filter(e => e.startsWith('sellerLinks')).map((err, i) => (
                     <p key={i} className="text-red-400 text-sm mb-2">{err}</p>
                   ))}
+                  <p className="text-sm text-gray-400 mb-3">Paste a store link. We look up its price automatically. If the store does not share a price, shoppers can check it at the store.</p>
                   <div className="space-y-3">
                     {product.sellerLinks?.map((link, idx) => (
-                      <div key={idx} className="flex gap-2 items-start">
+                      <div key={idx} className="seller-editor grid grid-cols-[1fr_auto] sm:grid-cols-[110px_1fr_auto] gap-2 items-start rounded-xl border border-gray-700 p-3">
                         <select
                           value={link.platform}
                           onChange={(e) => handleUpdateSellerLink(product.id, idx, 'platform', e.target.value)}
-                          className="bg-gray-700 text-white p-2 rounded w-32 border border-gray-600"
+                          aria-label="Retailer" className="bg-gray-700 text-white p-2 rounded w-full border border-gray-600"
                         >
                           <option value="amazon">Amazon</option>
                           <option value="flipkart">Flipkart</option>
@@ -559,8 +588,12 @@ export default function StudioPage() {
                           placeholder="Affiliate Link (HTTPS)"
                           value={link.url}
                           onChange={(e) => handleUpdateSellerLink(product.id, idx, 'url', e.target.value)}
-                          className="flex-1 bg-gray-700 text-white p-2 rounded border border-gray-600 focus:border-blue-500"
+                          onBlur={e => { void lookupPrice(product.id, idx, e.target.value); }}
+                          aria-label="Seller product URL" className="col-span-2 sm:col-span-1 row-start-2 sm:row-start-auto min-w-0 w-full bg-gray-700 text-white p-2 rounded border border-gray-600 focus:border-blue-500"
                         />
+                        <p aria-live="polite" className="col-span-2 sm:col-span-3 text-xs text-purple-200">
+                          {link.status === 'loading' ? 'Looking up price...' : link.price ? `Auto price: INR ${link.price.toLocaleString('en-IN')}` : link.status === 'unavailable' || link.status === 'unsupported' ? 'Price unavailable - shoppers can check at the store' : 'Price fetched automatically when you add a link'}
+                        </p>
                         <button
                           type="button"
                           onClick={() => handleDeleteSellerLink(product.id, idx)}
@@ -572,7 +605,7 @@ export default function StudioPage() {
                       </div>
                     ))}
                   </div>
-                  {validationErrors[product.id]?.filter(e => e.startsWith('sellerLink')).map((err, i) => (
+                  {validationErrors[product.id]?.filter(e => e.startsWith('sellerLink') && !e.startsWith('sellerLinks:')).map((err, i) => (
                     <p key={i} className="text-red-400 text-sm mt-2">{err}</p>
                   ))}
                   <button
@@ -584,13 +617,15 @@ export default function StudioPage() {
                     + Add Seller Link
                   </button>
                 </div>
-              </div>
+                  <button type="button" onClick={() => handleDeleteProduct(product.id)} className="text-sm text-red-300 hover:text-red-200 py-2">Remove product</button>
+                </div>
+              </details>
             ))}
 
             <button
               type="button"
               onClick={handleAddProduct}
-              className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 rounded-lg"
+              className="md:col-span-2 w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 rounded-lg"
             >
               + Add Another Product
             </button>
@@ -599,7 +634,7 @@ export default function StudioPage() {
               type="button"
               onClick={handleSaveProducts}
               disabled={loading || products.length === 0}
-              className="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 rounded-lg disabled:opacity-50"
+              className="md:col-span-2 w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 rounded-lg disabled:opacity-50"
             >
               {loading ? 'Saving...' : '📋 Save & Continue'}
             </button>
@@ -612,7 +647,7 @@ export default function StudioPage() {
   // Automation Setup Stage
   if (stage === 'automation') {
     return (
-      <div className="min-h-screen bg-gray-900 text-white p-6">
+      <div className="studio-shell min-h-screen text-white p-4 sm:p-6">
         <div className="max-w-2xl mx-auto">
           <button onClick={() => setStage('products')} className="mb-6 text-blue-400 hover:text-blue-300">← Back to Products</button>
 
@@ -650,7 +685,7 @@ export default function StudioPage() {
                   <h3 className="text-lg font-semibold mb-3">Trigger Words (Read-only for MVP)</h3>
                   <div className="flex gap-2 flex-wrap">
                     {['LINK', 'SHOP', 'BUY'].map(word => (
-                      <div key={word} className="bg-blue-900 px-3 py-1 rounded text-sm">
+                      <div key={word} className="bg-blue-900 px-3 py-1 rounded-full text-xs whitespace-nowrap">
                         {word}
                       </div>
                     ))}

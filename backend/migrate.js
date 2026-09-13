@@ -146,6 +146,7 @@ async function migrate() {
         affiliate_url   TEXT NOT NULL,
         created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+      ALTER TABLE seller_links ADD COLUMN IF NOT EXISTS price NUMERIC(12,2) CHECK (price > 0);
     `);
     console.log('✓ Migrations complete');
   } finally {
