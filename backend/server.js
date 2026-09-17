@@ -1,4 +1,5 @@
 const { fetchRetailerPrice, enrichProducts } = require('./retailer-prices');
+const { automationError, imageExtension } = require('./studio-inputs');
 require('dotenv').config({ path: require('path').join(__dirname, '.env') });
 
 const http = require('http');
@@ -12,7 +13,7 @@ const mailgun = new Mailgun(FormData);
 const mg = mailgun.client({ username: 'api', key: process.env.MAILGUN_API_KEY || 'mock-key' });
 
 const {
-  getReel, getReelByInstagramMediaId, reelUrl, mappingRows,
+  getReel, getReelByInstagramMediaId, reelUrl, mappingRows, getCatalogProducts,
   addReel, updateReel, deleteReel,
   addProduct, updateProduct, deleteProduct,
   getPlatforms, addOffer, updateOffer, deleteOffer, getOffersRaw, getOffers,
@@ -67,7 +68,7 @@ const rateLimitMap = new Map(); // { key: [timestamp, count] }
 const accountLockoutMap = new Map(); // { email: lockedUntil }
 const csrfTokens = new Map(); // { token: expiry }
 const instagramOAuthStates = new Map(); // { state: expiry }
-const AFFILIATE_DOMAINS = ['amazon.in', 'amazon.com', 'flipkart.com', 'myntra.com', 'meesho.com', 'fktr.in', 'amzn.in', 'amzn.to'];
+const AFFILIATE_DOMAINS = ['amazon.in', 'amazon.com', 'flipkart.com', 'myntra.com', 'meesho.com', 'fktr.in', 'amzn.in', 'amzn.to', 'myntr.it'];
 
 function generateCsrfToken() {
   const token = crypto.randomBytes(32).toString('hex');
@@ -130,7 +131,7 @@ function validateEmail(email) {
 function validateUrl(url, allowedDomains = AFFILIATE_DOMAINS) {
   try {
     const u = new URL(url);
-    return u.protocol === 'https:' && !u.username && !u.password && allowedDomains.some(domain => u.hostname === domain || u.hostname.endsWith('.' + domain));
+    return u.protocol === 'https:' && !u.username && !u.password && (!u.port || u.port === '443') && allowedDomains.some(domain => u.hostname === domain || u.hostname.endsWith('.' + domain));
   } catch {
     return false;
   }
@@ -177,10 +178,15 @@ function sendJson(res, status, data) {
   sendJsonWithHeaders(res, status, data);
 }
 
-function readBody(req) {
+function readBody(req, maxBytes = Infinity) {
   return new Promise((resolve, reject) => {
     const chunks = [];
-    req.on('data', (c) => chunks.push(c));
+    let size = 0;
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > maxBytes) { reject(new Error('Image must be 10 MB or smaller.')); return; }
+      chunks.push(c);
+    });
     req.on('end',  () => resolve(Buffer.concat(chunks)));
     req.on('error', reject);
   });
@@ -441,6 +447,26 @@ http.createServer(async (req, res) => {
       return handleInstagramWebhook(req, res);
 
     // ── File upload ───────────────────────────────────────────────────────────
+    if (req.method === 'POST' && url.pathname === '/api/product-images') {
+      if (!await requireCreator(req, res)) return;
+      let body;
+      try { body = await readBody(req, 10 * 1024 * 1024); }
+      catch (error) { return sendJson(res, 413, { error: error.message }); }
+      const extension = imageExtension(body);
+      if (!extension) return sendJson(res, 400, { error: 'Upload a JPG, PNG, GIF or WebP image.' });
+      const filename = `${crypto.randomUUID()}.${extension}`;
+      await fs.promises.writeFile(path.join(UPLOAD_DIR, filename), body);
+      return sendJson(res, 201, { url: `/api/product-images/${filename}` });
+    }
+    if (req.method === 'GET' && url.pathname.startsWith('/api/product-images/')) {
+      const filename = url.pathname.split('/').pop();
+      if (!/^[a-f0-9-]{36}\.(png|jpg|gif|webp)$/.test(filename)) return sendJson(res, 404, { error: 'Image not found.' });
+      const file = path.join(UPLOAD_DIR, filename);
+      if (!fs.existsSync(file)) return sendJson(res, 404, { error: 'Image not found.' });
+      const types = { png: 'image/png', jpg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp' };
+      res.writeHead(200, { 'Content-Type': types[filename.split('.').pop()], 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'public, max-age=31536000, immutable' });
+      return fs.createReadStream(file).pipe(res);
+    }
     if (req.method === 'POST' && url.pathname === '/api/upload') {
       if (!await requireCreator(req, res)) return;
       const body     = await readBody(req);
@@ -828,6 +854,9 @@ http.createServer(async (req, res) => {
     }
 
     // ── Reels ─────────────────────────────────────────────────────────────────
+    if (req.method === 'GET' && url.pathname === '/api/products')
+      return sendJson(res, 200, { products: await getCatalogProducts() });
+
     if (req.method === 'GET' && url.pathname === '/api/reels')
       return sendJson(res, 200, await mappingRows());
 
@@ -1047,6 +1076,8 @@ http.createServer(async (req, res) => {
       if (req.method === 'POST' || req.method === 'PATCH') {
         const user = await requireCreator(req, res); if (!user) return;
         const data = parseJson((await readBody(req)).toString()) || {};
+        const validationError = automationError(data);
+        if (validationError) return sendJson(res, 400, { error: validationError });
         const saved = await store.saveReelAutomation(user.id, reelSlug, data);
         return sendJson(res, 200, saved);
       }

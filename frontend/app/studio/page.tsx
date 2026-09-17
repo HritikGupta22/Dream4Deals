@@ -1,10 +1,16 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 
 import Image from 'next/image';
 
 const API_URL = '';
+const defaultAutomation = { enabled: false, triggers: ['LINK', 'SHOP', 'BUY'], replyTemplate: 'Hi {name}! Check out this reel and shop the look: {url}' };
+
+function normalizeTriggers(words: unknown): string[] {
+  if (!Array.isArray(words)) return [];
+  return [...new Set(words.filter((word): word is string => typeof word === 'string').map(word => word.trim().toUpperCase()).filter(Boolean))];
+}
 
 type Stage = 'auth' | 'posts' | 'products' | 'automation';
 
@@ -20,6 +26,7 @@ interface SellerLink {
   url: string;
   price?: number | null;
   status?: 'loading' | 'fetched' | 'unavailable' | 'unsupported';
+  reason?: string;
 }
 
 interface StudioProduct {
@@ -40,6 +47,51 @@ interface InstagramPost {
 
 type ValidationErrors = Record<string, string[]>;
 
+function RemoveProductDialog({ productName, onCancel, onConfirm }: {
+  productName: string;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    const previousFocus = document.activeElement as HTMLElement | null;
+    dialog?.showModal();
+    cancelRef.current?.focus();
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      dialog?.close();
+      document.body.style.overflow = previousOverflow;
+      if (previousFocus?.isConnected) previousFocus.focus();
+    };
+  }, []);
+
+  return (
+    <dialog
+      ref={dialogRef}
+      aria-labelledby="remove-product-title"
+      aria-describedby="remove-product-description"
+      onCancel={(event) => { event.preventDefault(); onCancel(); }}
+      className="fixed inset-0 m-auto w-[calc(100%-2rem)] max-w-md rounded-2xl border border-gray-700 bg-gray-900 p-6 text-white shadow-2xl backdrop:bg-black/70 backdrop:backdrop-blur-sm"
+    >
+      <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-red-500/15 text-red-300" aria-hidden="true">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18M9 6V4h6v2M5 6l1 14h12l1-14M10 10v6M14 10v6" /></svg>
+      </div>
+      <h2 id="remove-product-title" className="text-xl font-semibold">Remove product?</h2>
+      <p id="remove-product-description" className="mt-2 text-sm leading-6 text-gray-400">
+        Remove <span className="font-medium text-gray-200 break-words">{productName || 'this product'}</span> and its store links from this reel? Save &amp; Continue will save this change.
+      </p>
+      <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+        <button ref={cancelRef} type="button" onClick={onCancel} className="rounded-lg border border-gray-600 px-4 py-2.5 text-sm font-semibold hover:bg-gray-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-purple-400">Cancel</button>
+        <button type="button" onClick={onConfirm} className="rounded-lg bg-red-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-red-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-400">Remove product</button>
+      </div>
+    </dialog>
+  );
+}
+
 function messageFromError(error: unknown, fallback = 'Something went wrong.') {
   return error instanceof Error ? error.message : fallback;
 }
@@ -58,10 +110,10 @@ const validateImageUrl = (url: string) => {
 const validateSellerUrl = (url: string) => {
   try {
     const u = new URL(url);
-    const allowedDomains = ['amazon.in', 'amazon.com', 'flipkart.com', 'myntra.com', 'meesho.com', 'fktr.in', 'amzn.in', 'amzn.to'];
+    const allowedDomains = ['amazon.in', 'amazon.com', 'flipkart.com', 'myntra.com', 'meesho.com', 'fktr.in', 'amzn.in', 'amzn.to', 'myntr.it'];
     const isHttps = u.protocol === 'https:';
     const isDomainAllowed = allowedDomains.some(domain => u.hostname === domain || u.hostname.endsWith('.' + domain));
-    return isHttps && !u.username && !u.password && isDomainAllowed;
+    return isHttps && !u.username && !u.password && (!u.port || u.port === '443') && isDomainAllowed;
   } catch {
     return false;
   }
@@ -73,11 +125,14 @@ export default function StudioPage() {
   const [posts, setPosts] = useState<InstagramPost[]>([]);
   const [selectedPost, setSelectedPost] = useState<InstagramPost | null>(null);
   const [products, setProducts] = useState<StudioProduct[]>([]);
-  const [automation, setAutomation] = useState({ enabled: false });
+  const [automation, setAutomation] = useState(defaultAutomation);
+  const [triggerInput, setTriggerInput] = useState('');
+  const [uploading, setUploading] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [validationErrors, setValidationErrors] = useState<ValidationErrors>({});
+  const [productToRemove, setProductToRemove] = useState<StudioProduct | null>(null);
 
   const handleInstagramOAuth = async () => {
     try {
@@ -154,6 +209,8 @@ export default function StudioPage() {
   }, [fetchPosts]);
 
   const handlePostSelect = (post: InstagramPost) => {
+    setAutomation(defaultAutomation);
+    setTriggerInput('');
     setError('');
     setSuccess('');
     setSelectedPost(post);
@@ -172,13 +229,53 @@ export default function StudioPage() {
     setProducts([...products, newProduct]);
   };
 
+  const uploadImage = async (productId: StudioProduct['id'], file: File) => {
+    setError('');
+    if (file.size > 10 * 1024 * 1024) { setError('Image must be 10 MB or smaller.'); return; }
+    setUploading(previous => ({ ...previous, [productId]: true }));
+    try {
+      // Convert other browser-readable formats (such as BMP/AVIF) to PNG.
+      let body: Blob = file;
+      if (!['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(file.type)) {
+        const bitmap = await createImageBitmap(file);
+        const canvas = document.createElement('canvas');
+        canvas.width = bitmap.width;
+        canvas.height = bitmap.height;
+        canvas.getContext('2d')!.drawImage(bitmap, 0, 0);
+        bitmap.close();
+        body = await new Promise<Blob>((resolve, reject) => canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('Cannot convert this image. Please use JPG or PNG.')), 'image/png'));
+      }
+      if (body.size > 10 * 1024 * 1024) throw new Error('Converted image must be 10 MB or smaller.');
+      const response = await fetch('/api/product-images', { method: 'POST', headers: { Authorization: `Bearer ${localStorage.getItem('dream4deals_token')}`, 'Content-Type': body.type }, body });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Image upload failed.');
+      const imageUrl = new URL(data.url, window.location.origin).href;
+      setProducts(previous => previous.map(product => product.id === productId ? { ...product, imageUrl } : product));
+      setValidationErrors(previous => ({ ...previous, [productId]: (previous[productId] || []).filter(item => !item.startsWith('imageUrl')) }));
+    } catch (error) { setError(messageFromError(error, 'Cannot read this image. Please use JPG, PNG, GIF or WebP.')); }
+    finally { setUploading(previous => ({ ...previous, [productId]: false })); }
+  };
+
+  const addTrigger = () => {
+    const words = triggerInput.split(',').map(word => word.trim().toUpperCase()).filter(Boolean);
+    setAutomation(previous => ({ ...previous, triggers: normalizeTriggers([...previous.triggers, ...words]) }));
+    setTriggerInput('');
+  };
+
   const handleDeleteProduct = (id: StudioProduct['id']) => {
-    if (confirm('Delete this product? This action cannot be undone.')) {
-      setProducts(products.filter(p => p.id !== id));
-      const newErrors = { ...validationErrors };
+    setProductToRemove(products.find(product => product.id === id) || null);
+  };
+
+  const confirmRemoveProduct = () => {
+    if (!productToRemove) return;
+    const id = productToRemove.id;
+    setProducts(previous => previous.filter(product => product.id !== id));
+    setValidationErrors(previous => {
+      const newErrors = { ...previous };
       delete newErrors[String(id)];
-      setValidationErrors(newErrors);
-    }
+      return newErrors;
+    });
+    setProductToRemove(null);
   };
 
   const handleUpdateProduct = (id: StudioProduct['id'], field: 'name' | 'imageUrl', value: string) => {
@@ -227,8 +324,15 @@ export default function StudioPage() {
 
   const lookupPrice = async (productId: StudioProduct['id'], index: number, url: string) => {
     if (!validateSellerUrl(url)) return;
-    const update = (result: Partial<SellerLink>) => setProducts(previous => previous.map(product => product.id === productId
-      ? { ...product, sellerLinks: product.sellerLinks.map((link, i) => i === index && link.url === url ? { ...link, ...result } : link) } : product));
+    const update = (result: Partial<SellerLink> & { name?: string }) => setProducts(previous => previous.map(product => {
+      if (product.id !== productId || product.sellerLinks[index]?.url !== url) return product;
+      const { name, ...sellerResult } = result;
+      return {
+        ...product,
+        name: product.name.trim() ? product.name : (typeof name === 'string' ? name.trim() : '') || product.name,
+        sellerLinks: product.sellerLinks.map((link, i) => i === index ? { ...link, ...sellerResult } : link),
+      };
+    }));
     update({ status: 'loading', price: null });
     try {
       const response = await fetch('/api/creator/retailer-price', {
@@ -285,6 +389,7 @@ export default function StudioPage() {
   };
 
   const handleSaveProducts = async () => {
+    if (Object.values(uploading).some(Boolean)) return;
     if (!selectedPost) {
       setError('Select an Instagram post before adding products.');
       return;
@@ -319,6 +424,10 @@ export default function StudioPage() {
       
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to save products');
+      const ruleResponse = await fetch(`${API_URL}/api/reels/${data.reelSlug || selectedPost.reelSlug}/automation`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!ruleResponse.ok) throw new Error('Products saved, but automation settings could not be loaded. Please retry.');
+      const rule = await ruleResponse.json();
+      setAutomation({ ...defaultAutomation, ...rule, triggers: normalizeTriggers(rule.triggers ?? defaultAutomation.triggers) });
       if (data.reelSlug) {
         setSelectedPost({ ...selectedPost, reelSlug: data.reelSlug });
       }
@@ -336,6 +445,13 @@ export default function StudioPage() {
   };
 
   const handleSaveAutomation = async () => {
+    const triggers = normalizeTriggers([...automation.triggers, ...triggerInput.split(',')]);
+    if (!triggers.length || triggers.length > 50 || triggers.some(word => word.length > 80)) {
+      setError('Add 1–50 trigger words or phrases (up to 80 characters each).'); return;
+    }
+    if (!automation.replyTemplate.includes('{name}') || !automation.replyTemplate.includes('{url}') || automation.replyTemplate.length > 2000) {
+      setError('Reply template must include both {name} and {url}, and be at most 2000 characters.'); return;
+    }
     if (!selectedPost?.reelSlug) {
       setError('Save the products first so Dream4Deals can create this post’s public reel page.');
       return;
@@ -356,17 +472,17 @@ export default function StudioPage() {
           enabled: automation.enabled,
           replyComments: true,
           replyDms: true,
-          triggers: ['LINK', 'SHOP', 'BUY'],
-          replyTemplate: 'Hi {name}! Check out this reel and shop the look: {url}'
+          triggers,
+          replyTemplate: automation.replyTemplate
         })
       });
 
-      if (!res.ok) throw new Error('Failed to save automation settings');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to save automation settings');
       
       setSuccess('✅ Automation settings saved!');
       setTimeout(() => {
         setStage('posts');
-        setPosts([]);
       }, 1500);
     } catch (e) {
       setError(messageFromError(e));
@@ -393,7 +509,7 @@ export default function StudioPage() {
         },
         body: JSON.stringify({
           kind: 'comment',
-          text: 'LINK',
+          text: automation.triggers[0] || 'LINK',
           mediaId: selectedPost.instagramMediaId,
         }),
       });
@@ -403,7 +519,7 @@ export default function StudioPage() {
       if (result?.status !== 'simulated') {
         throw new Error(`Automation test result: ${result?.status || 'unknown'}`);
       }
-      setSuccess(`Test passed: LINK matched the rule for ${result.reelSlug}. No Instagram message was sent.`);
+      setSuccess(`Test passed: the trigger matched the saved rule for ${result.reelSlug}. No Instagram message was sent.`);
     } catch (e) {
       setError(messageFromError(e, 'Automation test failed.'));
     } finally {
@@ -511,6 +627,7 @@ export default function StudioPage() {
   if (stage === 'products') {
     return (
       <div className="studio-shell min-h-screen text-white p-4 sm:p-6">
+        {productToRemove && <RemoveProductDialog productName={productToRemove.name} onCancel={() => setProductToRemove(null)} onConfirm={confirmRemoveProduct} />}
         <div className="max-w-6xl mx-auto">
           <button onClick={() => setStage('posts')} className="mb-6 text-blue-400 hover:text-blue-300">← Back to Posts</button>
 
@@ -551,15 +668,23 @@ export default function StudioPage() {
                 )}
 
                 <label htmlFor={`product-image-${product.id}`} className="block text-sm font-medium mb-2">Product image URL</label>
+                <div className="relative mb-4">
                 <input
                   id={`product-image-${product.id}`}
                   type="url"
                   aria-label="Product image URL"
                   placeholder="Product Image URL (HTTP/HTTPS) *"
                   value={product.imageUrl}
+                  disabled={uploading[product.id]}
                   onChange={(e) => handleUpdateProduct(product.id, 'imageUrl', e.target.value)}
-                  className="w-full bg-gray-700 text-white p-3 rounded mb-4 border border-gray-600 focus:border-blue-500"
+                  className="w-full bg-gray-700 text-white p-3 pr-28 rounded border border-gray-600 focus:border-blue-500"
                 />
+                <label className="absolute right-2 top-2 cursor-pointer rounded bg-blue-600 px-3 py-1">
+                  {uploading[product.id] ? 'Uploading…' : 'Browse'}
+                  <input type="file" accept="image/*" aria-label="Upload product image" className="sr-only" disabled={uploading[product.id]} onChange={event => { const file = event.target.files?.[0]; if (file) void uploadImage(product.id, file); event.target.value = ''; }} />
+                </label>
+                </div>
+                <p className="text-xs text-gray-400 mb-3">Paste an image link or browse for a photo or screenshot (up to 10 MB). JPG, PNG, GIF, WebP and other formats your browser can read.</p>
                 {validationErrors[product.id]?.find(e => e.startsWith('image')) && (
                   <p className="text-red-400 text-sm mb-3">{validationErrors[product.id].find(e => e.startsWith('image'))}</p>
                 )}
@@ -592,7 +717,7 @@ export default function StudioPage() {
                           aria-label="Seller product URL" className="col-span-2 sm:col-span-1 row-start-2 sm:row-start-auto min-w-0 w-full bg-gray-700 text-white p-2 rounded border border-gray-600 focus:border-blue-500"
                         />
                         <p aria-live="polite" className="col-span-2 sm:col-span-3 text-xs text-purple-200">
-                          {link.status === 'loading' ? 'Looking up price...' : link.price ? `Auto price: INR ${link.price.toLocaleString('en-IN')}` : link.status === 'unavailable' || link.status === 'unsupported' ? 'Price unavailable - shoppers can check at the store' : 'Price fetched automatically when you add a link'}
+                          {link.status === 'loading' ? 'Looking up price...' : link.price ? `Auto price: INR ${link.price.toLocaleString('en-IN')}` : link.reason === 'blocked' ? 'Store verification blocks automatic lookup. Shoppers can still visit your affiliate link.' : link.status === 'unavailable' || link.status === 'unsupported' ? 'Price unavailable - shoppers can check at the store' : 'Price fetched automatically when you add a link'}
                         </p>
                         <button
                           type="button"
@@ -633,7 +758,7 @@ export default function StudioPage() {
             <button
               type="button"
               onClick={handleSaveProducts}
-              disabled={loading || products.length === 0}
+              disabled={loading || products.length === 0 || Object.values(uploading).some(Boolean)}
               className="md:col-span-2 w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 rounded-lg disabled:opacity-50"
             >
               {loading ? 'Saving...' : '📋 Save & Continue'}
@@ -678,28 +803,31 @@ export default function StudioPage() {
               </button>
             </div>
 
-            {automation.enabled && (
+            {(
               <>
                 {/* Trigger Words */}
                 <div>
-                  <h3 className="text-lg font-semibold mb-3">Trigger Words (Read-only for MVP)</h3>
+                  <h3 className="text-lg font-semibold mb-3">Trigger Words</h3>
                   <div className="flex gap-2 flex-wrap">
-                    {['LINK', 'SHOP', 'BUY'].map(word => (
+                    {normalizeTriggers(automation.triggers).map(word => (
                       <div key={word} className="bg-blue-900 px-3 py-1 rounded-full text-xs whitespace-nowrap">
                         {word}
+                        <button type="button" aria-label={`Remove ${word}`} className="ml-2" onClick={() => setAutomation(previous => ({ ...previous, triggers: normalizeTriggers(previous.triggers).filter(item => item !== word) }))}>×</button>
                       </div>
                     ))}
+                  </div>
+                  <div className="flex gap-2 mt-3">
+                    <input aria-label="New trigger words" placeholder="Add words or phrases, separated by commas" value={triggerInput} onChange={event => setTriggerInput(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); addTrigger(); } }} className="min-w-0 flex-1 bg-gray-700 border border-gray-600 rounded p-2" />
+                    <button type="button" onClick={addTrigger} className="bg-blue-600 rounded px-4">Add</button>
                   </div>
                   <p className="text-gray-400 text-sm mt-2">Comments and DMs containing these words will trigger automatic replies</p>
                 </div>
 
                 {/* Reply Template */}
                 <div>
-                  <h3 className="text-lg font-semibold mb-3">Sample Reply Template</h3>
-                  <div className="bg-gray-700 p-3 rounded text-sm border border-gray-600">
-                    <p>Hi {'{name}'}! Check out this reel and shop the look: {'{url}'}</p>
-                  </div>
-                  <p className="text-gray-400 text-sm mt-2">Templates use {'{name}'} and {'{url}'} placeholders</p>
+                  <label htmlFor="reply-template" className="block text-lg font-semibold mb-3">Reply Template</label>
+                  <textarea id="reply-template" rows={4} maxLength={2000} value={automation.replyTemplate} onChange={event => setAutomation(previous => ({ ...previous, replyTemplate: event.target.value }))} className="w-full bg-gray-700 p-3 rounded text-sm border border-gray-600" />
+                  <p className="text-gray-400 text-sm mt-2">Both {'{name}'} and {'{url}'} are required to save. Save your changes before testing automation.</p>
                 </div>
 
                 {/* Test Button */}

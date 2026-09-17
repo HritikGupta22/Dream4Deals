@@ -49,3 +49,26 @@ test('retailer validation accepts short links and rejects lookalike domains and 
   for (const url of ['https://fktr.in/LLfJWun', 'https://www.flipkart.com/product', 'https://amzn.in/example', 'https://www.meesho.com/af_invite/example']) assert.equal(context.validateUrl(url), true, url);
   for (const url of ['https://flipkart.com.evil.test/product', 'https://notamazon.in/', 'http://fktr.in/example', 'https://user:pass@flipkart.com/']) assert.equal(context.validateUrl(url), false, url);
 });
+
+test('Studio, save API, and price lookup agree for every supported retailer domain', () => {
+  const server = fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8');
+  const studio = fs.readFileSync(path.join(__dirname, '../frontend/app/studio/page.tsx'), 'utf8');
+  const context = vm.createContext({ URL });
+  vm.runInContext(server.match(/const AFFILIATE_DOMAINS = .*;/)[0] + '\n' + server.slice(server.indexOf('function validateUrl('), server.indexOf('//', server.indexOf('function validateUrl('))), context);
+  const studioValidator = studio.slice(studio.indexOf('const validateSellerUrl ='), studio.indexOf('export default function StudioPage'));
+  vm.runInContext(studioValidator.replace('(url: string)', '(url)') + '\nthis.validateSellerUrl = validateSellerUrl;', context);
+  const { allowedUrl } = require('./retailer-prices');
+  const validators = [context.validateUrl, context.validateSellerUrl, allowedUrl];
+  const domains = ['amazon.in', 'amazon.com', 'amzn.in', 'amzn.to', 'flipkart.com', 'fktr.in', 'meesho.com', 'myntra.com', 'myntr.it'];
+  for (const validate of validators) {
+    assert.equal(validate('https://myntr.it/4Uh5K87'), true);
+    for (const domain of domains) {
+      for (const url of [`https://${domain}/product?tag=creator`, `https://www.${domain}/product`]) {
+        assert.equal(validate(url), true, url);
+      }
+      for (const url of [`http://${domain}/`, `https://${domain}.evil.test/`, `https://not${domain}/`, `https://user:pass@${domain}/`, `https://${domain}:4000/`]) {
+        assert.equal(validate(url), false, url);
+      }
+    }
+  }
+});

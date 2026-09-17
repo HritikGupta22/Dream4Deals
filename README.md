@@ -53,6 +53,28 @@ Reels are matched by Instagram media ID (see `instagramMediaId` in `backend/data
 - Creator Studio: mapping, triggers, template, event log
 - Webhook handler for comments and DMs
 
+## Store prices and sizes
+
+Product pages request `/api/reels/:slug/prices` in the background. Saved positive prices are reused without a retailer request. Each unique lookup URL has a maximum lifetime budget of two outgoing HTTP requests, including redirects. Lookup stops when a price is found or the store blocks access; missing metadata can use the remaining request. Concurrent visitors share the same lookup. Successes and failures are saved in `backend/storage/retailer-lookups.json`, with the budget reserved before each request, so subsequent visits and backend restarts do not keep retrying. Flipkart product lookups omit campaign parameters while retaining product (`pid`) and seller (`lid`) identifiers. The original affiliate URL is retained for shopper clicks.
+
+This is a saved price snapshot, not continuous live pricing. There is no automatic expiry, polling, or retry after a completed lookup. Long short-link redirect chains can exhaust the budget before reaching a product page. The local lookup ledger is intended for one backend process with persistent storage; multiple server instances need a shared database and atomic request-budget reservations before deployment.
+
+Prices come from public INR product metadata. Sizes are read from structured product metadata and Flipkart's size links; listed sizes do not guarantee stock. Delivery information is not fetched or displayed in the comparison UI.
+
+Some stores, including Meesho in our verification, return a verification page instead of product data. The app reports this without inventing a price. Reliable coverage for these stores needs an authorized retailer/affiliate data feed; an affiliate tracking link alone does not grant API access.
+
+`fktr.in` links that redirect through `linkredirect.in/visitretailer/...` are resolved using their embedded Flipkart deep link without requesting the intermediary. Flipkart can still block the deep-link endpoint; use a full Flipkart affiliate product URL when available.
+
+Meesho invite links that redirect through `meesho.onelink.me` use the embedded `af_web_dp` product URL without contacting the intermediary. The destination must remain an allowed HTTPS Meesho URL. Full product URLs can also return verification pages or HTTP 403/429, so normalization alone does not guarantee a live price.
+
+## Studio images and automation
+
+Product image fields accept an HTTP/HTTPS URL or a local file through Browse. Authenticated uploads use `POST /api/product-images` (10 MB limit). JPG, PNG, GIF and WebP are stored directly; other browser-readable image formats are converted to PNG in the browser. Formats the browser cannot decode must first be exported as JPG or PNG.
+
+Files are stored in `backend/uploads` under generated filenames and served through `/api/product-images/:filename`, including through the frontend's API proxy. The product database stores the public image URL, not the file contents. Keep this directory on persistent storage and back it up. Production with multiple backend instances needs shared storage or object storage. Use a stable public hostname: URLs saved under a temporary tunnel hostname need updating if that hostname changes. Replaced or abandoned uploads are not automatically deleted.
+
+Per-reel automation supports adding/removing trigger words or phrases (comma-separated input), and editing the reply template. Both `{name}` and `{url}` are required by the UI and API, including when saving disabled automation. Saved rules reload when continuing from products to automation. Save changes before testing; tests use the persisted rule.
+
 ## Later
 
 Next.js, Express, PostgreSQL, creator login, live affiliate feeds, and Meta OAuth — listed as open items in `TASKS.md`.

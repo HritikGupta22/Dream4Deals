@@ -19,7 +19,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             dream<span className="text-[#e96050]">4</span>deals
           </a>
           <nav className="hidden md:flex gap-8">
-            <a href="#shop" className="text-[13px] text-[#716966] no-underline">Shop the reel</a>
+            <a href="/shop" className="text-[13px] text-[#716966] no-underline">Shop all products</a>
             <a href="/studio" className="text-[13px] text-[#716966] no-underline">Creator Studio</a>
           </nav>
         </header>

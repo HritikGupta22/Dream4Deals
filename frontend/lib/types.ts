@@ -9,7 +9,10 @@ export interface SellerLink {
   platform: string;
   url: string;
   seller?: string;
-  price?: number;
+  price?: number | null;
+  sizes?: string[];
+  reason?: string;
+  checkedAt?: string;
   rating?: string;
   delivery?: string;
 }
@@ -29,6 +32,9 @@ export interface Seller {
   rating: string;
   delivery: string;
   link: string;
+  sizes?: string[];
+  reason?: string;
+  checkedAt?: string;
 }
 
 export interface PlatformOffers {

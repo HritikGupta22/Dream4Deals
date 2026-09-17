@@ -1,5 +1,28 @@
 const pool = require('./db');
 
+async function getCatalogProducts() {
+  const products = await pool.query('SELECT id, name, category, price::float AS price, image FROM products ORDER BY created_at DESC, id');
+  const links = await pool.query(`SELECT product_id, platform, affiliate_url AS url, price::float AS price FROM seller_links`);
+  const offers = await pool.query(`SELECT o.product_id, p.name AS platform, o.affiliate_url AS url, o.price::float AS price, o.seller
+    FROM offers o JOIN platforms p ON p.id = o.platform_id WHERE o.available = true`);
+  const group = rows => {
+    const result = new Map();
+    for (const { product_id, ...link } of rows) {
+      if (!link.url) continue;
+      if (!result.has(product_id)) result.set(product_id, []);
+      result.get(product_id).push(link);
+    }
+    return result;
+  };
+  const sellers = group(links.rows);
+  const legacy = group(offers.rows);
+  return products.rows.map(product => {
+    const sellerLinks = sellers.get(product.id) || legacy.get(product.id) || [];
+    const prices = sellerLinks.map(link => Number(link.price)).filter(price => price > 0);
+    return { ...product, sellerLinks, price: prices.length ? Math.min(...prices) : product.price };
+  });
+}
+
 function reelUrl(slug) {
   return `${process.env.FRONTEND_BASE_URL || process.env.PUBLIC_BASE_URL || `http://localhost:${process.env.PORT || 3000}`}/reel/${slug}`;
 }
@@ -221,6 +244,7 @@ async function getOffers(productId) {
 }
 
 module.exports = {
+  getCatalogProducts,
   reelUrl, getReel, getReelByInstagramMediaId, mappingRows,
   addReel, updateReel, deleteReel,
   addProduct, updateProduct, deleteProduct,
