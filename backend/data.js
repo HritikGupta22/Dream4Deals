@@ -1,7 +1,13 @@
 const pool = require('./db');
 
 async function getCatalogProducts() {
-  const products = await pool.query('SELECT id, name, category, price::float AS price, image FROM products ORDER BY created_at DESC, id');
+  const products = await pool.query(`
+    SELECT p.id, p.name, p.category, p.price::float AS price, p.image
+    FROM products p
+    JOIN reels r ON r.id = p.reel_id
+    WHERE r.slug <> 'dress-pink-edit'
+    ORDER BY p.created_at DESC, p.id
+  `);
   const links = await pool.query(`SELECT product_id, platform, affiliate_url AS url, price::float AS price FROM seller_links`);
   const offers = await pool.query(`SELECT o.product_id, p.name AS platform, o.affiliate_url AS url, o.price::float AS price, o.seller
     FROM offers o JOIN platforms p ON p.id = o.platform_id WHERE o.available = true`);
