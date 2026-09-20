@@ -177,11 +177,11 @@ async function migrate() {
         [cloudinaryPattern, `https://res.cloudinary.com/${cloudName}/image/upload/%`]
       );
     }
-    console.log('✓ Migrations complete');
+    // console.log('Migrations complete');
   } finally {
     client.release();
     await pool.end();
   }
 }
 
-migrate().catch((e) => { console.error('Migration failed:', e.message); process.exit(1); });
+migrate().catch(() => { /* console.error('Migration failed:', error.message); */ process.exit(1); });

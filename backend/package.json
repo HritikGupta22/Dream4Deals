@@ -4,6 +4,8 @@
   "main": "data.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
+    "migrate": "node migrate.js",
+    "seed": "node seed.js",
     "start": "node server.js"
   },
   "keywords": [],

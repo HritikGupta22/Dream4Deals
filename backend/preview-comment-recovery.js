@@ -7,8 +7,9 @@ const directory = path.join(__dirname, 'storage');
 fs.mkdirSync(directory, { recursive: true });
 function log(level, message, metadata) {
   const entry = { timestamp: new Date().toISOString(), level, message, ...metadata };
-  fs.appendFileSync(path.join(directory, 'backend.log'), `${JSON.stringify(entry)}\n`, 'utf8');
-  console.log(JSON.stringify(entry));
+  // Preview file/console logging is disabled for production deployment.
+  // fs.appendFileSync(path.join(directory, 'backend.log'), `${JSON.stringify(entry)}\n`, 'utf8');
+  // console.log(JSON.stringify(entry));
 }
 // Intentionally no live flag or handler: this command cannot send messages.
 createCommentRecovery({ mode: 'preview',

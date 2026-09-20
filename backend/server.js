@@ -29,37 +29,28 @@ const { startCommentRecovery } = require('./comment-recovery');
 const { getDashboard, getAnalytics } = store;
 
 const PORT       = Number(process.env.PORT) || 3000;
-const STORAGE_DIR = path.join(__dirname, 'storage');
-if (!fs.existsSync(STORAGE_DIR)) fs.mkdirSync(STORAGE_DIR, { recursive: true });
+const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
 
-const LOG_FILE = path.join(STORAGE_DIR, 'backend.log');
-const ERROR_FILE = path.join(STORAGE_DIR, 'backend-errors.log');
+// File logging is disabled for the Vercel/Render deployment. Keep this
+// implementation for local development if logging is needed again later.
+// const STORAGE_DIR = path.join(__dirname, 'storage');
+// if (!fs.existsSync(STORAGE_DIR)) fs.mkdirSync(STORAGE_DIR, { recursive: true });
+// const LOG_FILE = path.join(STORAGE_DIR, 'backend.log');
+// const ERROR_FILE = path.join(STORAGE_DIR, 'backend-errors.log');
+// function appendLog(filePath, entry) {
+//   fs.appendFileSync(filePath, `${JSON.stringify(entry)}\n`, 'utf8');
+// }
+// function logInfo(message, meta = {}) {
+//   appendLog(LOG_FILE, { timestamp: new Date().toISOString(), level: 'INFO', ...meta, message });
+// }
+// function logError(message, meta = {}) {
+//   const entry = { timestamp: new Date().toISOString(), level: 'ERROR', ...meta, message };
+//   appendLog(ERROR_FILE, entry);
+//   appendLog(LOG_FILE, entry);
+// }
 
-function appendLog(filePath, entry) {
-  fs.appendFileSync(filePath, `${JSON.stringify(entry)}\n`, 'utf8');
-}
-
-function logInfo(message, meta = {}) {
-  appendLog(LOG_FILE, {
-    timestamp: new Date().toISOString(),
-    level: 'INFO',
-    ...meta,
-    ...(meta.message ? { errorMessage: meta.message } : {}),
-    message,
-  });
-}
-
-function logError(message, meta = {}) {
-  const entry = {
-    timestamp: new Date().toISOString(),
-    level: 'ERROR',
-    ...meta,
-    ...(meta.message ? { errorMessage: meta.message } : {}),
-    message,
-  };
-  appendLog(ERROR_FILE, entry);
-  appendLog(LOG_FILE, entry);
-}
+const logInfo = () => {};
+const logError = () => {};
 
 // ── Rate limiting & security ────────────────────────────────────────────────
 const rateLimitMap = new Map(); // { key: [timestamp, count] }
@@ -139,7 +130,7 @@ function validateUrl(url, allowedDomains = AFFILIATE_DOMAINS) {
 async function sendEmail(to, subject, html) {
   try {
     if (!process.env.MAILGUN_API_KEY || !process.env.MAILGUN_DOMAIN) {
-      console.log(`[MAIL] Demo mode: Email would be sent to ${to}: ${subject}`);
+      // console.log(`[MAIL] Demo mode: Email would be sent to ${to}: ${subject}`);
       return { success: true, mock: true };
     }
     
@@ -151,10 +142,10 @@ async function sendEmail(to, subject, html) {
     };
     
     const result = await mg.messages.create(process.env.MAILGUN_DOMAIN, messageData);
-    console.log(`[MAIL] Email sent: ${to} - ${subject}`);
+    // console.log(`[MAIL] Email sent: ${to} - ${subject}`);
     return { success: true, id: result.id };
   } catch (error) {
-    console.error(`[MAIL] Error: ${error.message}`);
+    // console.error(`[MAIL] Error: ${error.message}`);
     return { success: false, error: error.message };
   }
 }
@@ -162,7 +153,7 @@ async function sendEmail(to, subject, html) {
 function sendJsonWithHeaders(res, status, data) {
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
-    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Origin': CORS_ORIGIN,
     'Access-Control-Allow-Methods': 'GET,POST,PATCH,DELETE,OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type,Authorization',
     'X-Content-Type-Options': 'nosniff',
@@ -443,7 +434,7 @@ http.createServer(async (req, res) => {
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204, {
-        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Origin': CORS_ORIGIN,
         'Access-Control-Allow-Methods': 'GET,POST,PATCH,DELETE,OPTIONS',
         'Access-Control-Allow-Headers': 'Content-Type,Authorization',
       });
@@ -1137,7 +1128,7 @@ http.createServer(async (req, res) => {
     publicBaseUrl: process.env.PUBLIC_BASE_URL,
     frontendBaseUrl: process.env.FRONTEND_BASE_URL,
   });
-  console.log(`Dream4Deals backend running at http://localhost:${PORT}`);
+  // console.log(`Dream4Deals backend running at http://localhost:${PORT}`);
   startCommentRecovery({
     mode: process.env.INSTAGRAM_COMMENT_RECOVERY_MODE || 'live',
     handleJob,

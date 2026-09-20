@@ -122,9 +122,9 @@ export default function ProductShop({ reel, initialProducts }: { reel?: Reel; in
         setOffers(fallbackOffers);
       }
 
-    } catch (error) {
+    } catch {
       if (request !== requestId.current) return;
-      console.error("Error fetching offers:", error);
+      // console.error("Error fetching offers");
 
       const fallbackOffers = sellerLinksToOffers(product);
       setSelected(product);

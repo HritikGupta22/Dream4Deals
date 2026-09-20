@@ -135,10 +135,14 @@ async function saveSettings({ enabled, replyComments, replyDms, triggers, replyT
 
 // ── event log ─────────────────────────────────────────────────────────────────
 async function logEvent(type, detail) {
-  await pool.query(
-    'INSERT INTO webhook_logs (type, detail) VALUES ($1,$2)',
-    [String(type), String(detail)]
-  );
+  // Database event logging is disabled in production to avoid unbounded
+  // webhook_logs growth. Restore this query for local diagnostics if needed.
+  // await pool.query(
+  //   'INSERT INTO webhook_logs (type, detail) VALUES ($1,$2)',
+  //   [String(type), String(detail)]
+  // );
+  void type;
+  void detail;
 }
 
 async function listEvents() {

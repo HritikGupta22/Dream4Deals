@@ -138,11 +138,11 @@ async function seed() {
       `);
     }
 
-    console.log('✓ Seed complete');
+    // console.log('Seed complete');
   } finally {
     client.release();
     await pool.end();
   }
 }
 
-seed().catch((e) => { console.error('Seed failed:', e.message); process.exit(1); });
+seed().catch(() => { /* console.error('Seed failed:', error.message); */ process.exit(1); });

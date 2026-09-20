@@ -52,11 +52,12 @@ async function diagnose() {
     posts };
   const output = path.join(__dirname, 'storage', 'instagram-diagnostics.json');
   fs.mkdirSync(path.dirname(output), { recursive: true });
-  fs.writeFileSync(output, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
-  console.log(JSON.stringify(report, null, 2));
+  // Diagnostic file/console output is disabled for production deployment.
+  // fs.writeFileSync(output, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
+  // console.log(JSON.stringify(report, null, 2));
 }
 
 diagnose().catch(error => {
-  console.error(JSON.stringify({ error: error.meta ? error.message : 'Instagram diagnostics could not complete', ...error.meta, cause: error.cause?.code }));
+  // console.error(JSON.stringify({ error: error.meta ? error.message : 'Instagram diagnostics could not complete', ...error.meta, cause: error.cause?.code }));
   process.exitCode = 1;
 }).finally(() => pool.end());
