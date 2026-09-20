@@ -11,6 +11,7 @@ function harness(fail = false) {
       calls.push({ sql, values });
       if (sql.includes('FROM creator_posts')) return { rows: [{ id: 'post', instagram_media_id: 'media', caption: 'Look', image_url: 'https://example.com/post.jpg' }] };
       if (sql.includes('SELECT id, slug FROM reels')) return { rows: [{ id: 'reel-id', slug: 'instagram-media' }] };
+      if (sql.includes('SELECT id, image_public_id FROM products')) return { rows: [{ id: 'old-product', image_public_id: 'dream4deals/products/old-image' }] };
       if (fail && sql.includes('INSERT INTO seller_links')) throw new Error('insert failed');
       return { rows: [] };
     },
@@ -31,7 +32,8 @@ test('saving products persists individual prices and ignores missing prices for 
   const h = harness();
   const result = await h.api.saveProductsForPost('creator', 'post', [product]);
   assert.equal(result.reelSlug, 'instagram-media');
-  assert.equal(h.calls.find(call => call.sql.includes('INSERT INTO products')).values[6], 599);
+  assert.equal(h.calls.find(call => call.sql.includes('INSERT INTO products')).values[7], 599);
+  assert.deepEqual(result.removedPublicIds, ['dream4deals/products/old-image']);
   assert.deepEqual(h.calls.filter(call => call.sql.includes('INSERT INTO seller_links')).map(call => call.values[3]), [799, 599, null]);
   assert.deepEqual(h.calls.slice(-2).map(call => call.sql), ['COMMIT', 'RELEASE']);
 });

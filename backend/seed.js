@@ -47,9 +47,9 @@ async function seed() {
     ];
     for (const p of products) {
       await client.query(`
-        INSERT INTO products (id, reel_id, name, category, price, image)
+        INSERT INTO products (id, reel_id, name, category, price, image_url)
         VALUES ($1,$2,$3,$4,$5,$6)
-        ON CONFLICT (reel_id, id) DO UPDATE SET name=EXCLUDED.name, price=EXCLUDED.price, image=EXCLUDED.image
+        ON CONFLICT (reel_id, id) DO UPDATE SET name=EXCLUDED.name, price=EXCLUDED.price, image_url=EXCLUDED.image_url
       `, [p.id, reelId, p.name, p.category, p.price, p.image]);
     }
 

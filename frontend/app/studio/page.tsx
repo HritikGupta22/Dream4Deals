@@ -33,6 +33,7 @@ interface StudioProduct {
   id: number | string;
   name: string;
   imageUrl: string;
+  imagePublicId?: string | null;
   sellerLinks: SellerLink[];
 }
 
@@ -246,11 +247,27 @@ export default function StudioPage() {
         body = await new Promise<Blob>((resolve, reject) => canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('Cannot convert this image. Please use JPG or PNG.')), 'image/png'));
       }
       if (body.size > 10 * 1024 * 1024) throw new Error('Converted image must be 10 MB or smaller.');
-      const response = await fetch('/api/product-images', { method: 'POST', headers: { Authorization: `Bearer ${localStorage.getItem('dream4deals_token')}`, 'Content-Type': body.type }, body });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Image upload failed.');
-      const imageUrl = new URL(data.url, window.location.origin).href;
-      setProducts(previous => previous.map(product => product.id === productId ? { ...product, imageUrl } : product));
+      const authHeaders = { Authorization: `Bearer ${localStorage.getItem('dream4deals_token')}` };
+      const signatureResponse = await fetch('/api/product-images/signature', { method: 'POST', headers: authHeaders });
+      const signatureData = await signatureResponse.json();
+      if (!signatureResponse.ok) throw new Error(signatureData.error || 'Image upload is not configured.');
+
+      const formData = new FormData();
+      formData.append('file', body, file.name);
+      formData.append('api_key', signatureData.apiKey);
+      formData.append('timestamp', String(signatureData.timestamp));
+      formData.append('folder', signatureData.folder);
+      formData.append('signature', signatureData.signature);
+      const cloudinaryResponse = await fetch(`https://api.cloudinary.com/v1_1/${encodeURIComponent(signatureData.cloudName)}/image/upload`, {
+        method: 'POST',
+        body: formData,
+      });
+      const cloudinaryData = await cloudinaryResponse.json();
+      if (!cloudinaryResponse.ok || !cloudinaryData.secure_url) throw new Error(cloudinaryData.error?.message || 'Image upload failed.');
+      const imageUrl = String(cloudinaryData.secure_url);
+      const imagePublicId = String(cloudinaryData.public_id || '');
+      if (!imagePublicId) throw new Error('Cloudinary did not return an image asset ID.');
+      setProducts(previous => previous.map(product => product.id === productId ? { ...product, imageUrl, imagePublicId } : product));
       setValidationErrors(previous => ({ ...previous, [productId]: (previous[productId] || []).filter(item => !item.startsWith('imageUrl')) }));
     } catch (error) { setError(messageFromError(error, 'Cannot read this image. Please use JPG, PNG, GIF or WebP.')); }
     finally { setUploading(previous => ({ ...previous, [productId]: false })); }
@@ -279,8 +296,8 @@ export default function StudioPage() {
   };
 
   const handleUpdateProduct = (id: StudioProduct['id'], field: 'name' | 'imageUrl', value: string) => {
-    setProducts(products.map(p => 
-      p.id === id ? { ...p, [field]: value } : p
+    setProducts(products.map(p =>
+      p.id === id ? { ...p, [field]: value, ...(field === 'imageUrl' ? { imagePublicId: null } : {}) } : p
     ));
     // Clear validation error for this field
     if (validationErrors[String(id)]) {
@@ -410,6 +427,7 @@ export default function StudioPage() {
       const productsData = products.map(p => ({
         name: p.name,
         imageUrl: p.imageUrl,
+        imagePublicId: p.imagePublicId || null,
         sellerLinks: p.sellerLinks.map(link => ({ platform: link.platform, url: link.url.trim() })),
       }));
 

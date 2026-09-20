@@ -45,7 +45,7 @@ async function migrate() {
         name        TEXT NOT NULL,
         category    TEXT NOT NULL,
         price       NUMERIC(10,2) NOT NULL,
-        image       TEXT NOT NULL DEFAULT '',
+        image_url   TEXT NOT NULL DEFAULT '',
         created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         PRIMARY KEY (reel_id, id)
       );
@@ -138,6 +138,23 @@ async function migrate() {
       ALTER TABLE products ADD COLUMN IF NOT EXISTS creator_post_id UUID REFERENCES creator_posts(id) ON DELETE CASCADE;
       ALTER TABLE products ADD COLUMN IF NOT EXISTS image_url TEXT;
 
+      -- Consolidate the legacy product image column into image_url.
+      DO $$
+      BEGIN
+        IF EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_schema = 'public' AND table_name = 'products' AND column_name = 'image'
+        ) THEN
+          EXECUTE 'UPDATE products
+                   SET image_url = COALESCE(NULLIF(image_url, ''''), image, '''')';
+          EXECUTE 'ALTER TABLE products DROP COLUMN image';
+        END IF;
+      END $$;
+      UPDATE products SET image_url = '' WHERE image_url IS NULL;
+      ALTER TABLE products ALTER COLUMN image_url SET DEFAULT '';
+      ALTER TABLE products ALTER COLUMN image_url SET NOT NULL;
+      ALTER TABLE products ADD COLUMN IF NOT EXISTS image_public_id TEXT;
+
       CREATE TABLE IF NOT EXISTS seller_links (
         id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         product_id      TEXT NOT NULL,
@@ -148,6 +165,18 @@ async function migrate() {
       );
       ALTER TABLE seller_links ADD COLUMN IF NOT EXISTS price NUMERIC(12,2) CHECK (price > 0);
     `);
+    // Backfill asset IDs for Cloudinary images uploaded before this column existed.
+    const cloudName = String(process.env.CLOUDINARY_CLOUD_NAME || '').trim();
+    if (cloudName) {
+      const escapedCloudName = cloudName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const cloudinaryPattern = `^https://res\\.cloudinary\\.com/${escapedCloudName}/image/upload/(?:v[0-9]+/)?(dream4deals/products/[a-zA-Z0-9_-]+)(?:\\.[a-zA-Z0-9]+)?(?:\\?.*)?$`;
+      await client.query(
+        `UPDATE products
+         SET image_public_id = substring(image_url FROM $1)
+         WHERE image_public_id IS NULL AND image_url LIKE $2`,
+        [cloudinaryPattern, `https://res.cloudinary.com/${cloudName}/image/upload/%`]
+      );
+    }
     console.log('✓ Migrations complete');
   } finally {
     client.release();

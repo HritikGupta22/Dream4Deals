@@ -1,9 +1,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { automationError, imageExtension } = require('./studio-inputs');
+const { automationError } = require('./studio-inputs');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const crypto = require('node:crypto');
 
 test('custom triggers and templates require both placeholders even when disabled', () => {
   const rule = { enabled: false, triggers: ['PRICE', 'send details'], replyTemplate: 'Hello {name}, here is your item: {url}' };
@@ -16,40 +17,59 @@ test('custom triggers and templates require both placeholders even when disabled
   }
 });
 
-test('image uploads recognize raster signatures rather than trusting file names or MIME types', () => {
-  assert.equal(imageExtension(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0])), 'png');
-  assert.equal(imageExtension(Buffer.from([255, 216, 255, 224, 0, 0, 0, 0, 0, 0, 0, 0])), 'jpg');
-  assert.equal(imageExtension(Buffer.from('GIF89a1234567890')), 'gif');
-  assert.equal(imageExtension(Buffer.from('RIFF1234WEBP1234')), 'webp');
-  assert.equal(imageExtension(Buffer.from('<svg onload="alert(1)">')), null);
-  assert.equal(imageExtension(Buffer.from('<html>not an image</html>')), null);
-  assert.equal(imageExtension(Buffer.alloc(0)), null);
-});
-
-test('image upload route authenticates, rejects bad bytes, and stores a generated file URL', async () => {
+test('image upload signature route authenticates and keeps the Cloudinary secret private', async () => {
   const source = fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8');
-  const start = source.indexOf("    if (req.method === 'POST' && url.pathname === '/api/product-images')");
-  const end = source.indexOf("    if (req.method === 'GET' && url.pathname.startsWith('/api/product-images/'))", start);
-  for (const scenario of ['unauthorized', 'invalid', 'large', 'valid']) {
-    const writes = [];
+  const start = source.indexOf("    if (req.method === 'POST' && url.pathname === '/api/product-images/signature')");
+  const end = source.indexOf('    //', start + 1);
+  for (const scenario of ['unauthorized', 'unconfigured', 'valid']) {
     const context = {
-      req: { method: 'POST' }, url: { pathname: '/api/product-images' }, res: {},
+      req: { method: 'POST' }, url: { pathname: '/api/product-images/signature' }, res: {},
       requireCreator: async () => scenario !== 'unauthorized',
-      readBody: async (_req, limit) => {
-        assert.equal(limit, 10 * 1024 * 1024);
-        if (scenario === 'large') throw new Error('Image must be 10 MB or smaller.');
-        return Buffer.from(scenario === 'invalid' ? '<html>invalid file</html>' : 'GIF89a1234567890');
-      },
-      imageExtension, crypto: { randomUUID: () => 'generated-id' }, path, UPLOAD_DIR: '/uploads',
-      fs: { promises: { writeFile: async (...args) => writes.push(args) } },
+      process: { env: scenario === 'unconfigured' ? {} : {
+        CLOUDINARY_CLOUD_NAME: 'demo-cloud',
+        CLOUDINARY_API_KEY: 'public-key',
+        CLOUDINARY_API_SECRET: 'private-secret',
+      } },
+      crypto,
       sendJson: (_res, status, data) => ({ status, data }),
     };
     const result = await vm.runInNewContext(`(async () => {${source.slice(start, end)}})()`, context);
     if (scenario === 'unauthorized') assert.equal(result, undefined);
-    else assert.equal(result.status, { invalid: 400, large: 413, valid: 201 }[scenario]);
-    assert.equal(writes.length, scenario === 'valid' ? 1 : 0);
-    if (scenario === 'valid') assert.equal(result.data.url, '/api/product-images/generated-id.gif');
+    else assert.equal(result.status, scenario === 'unconfigured' ? 503 : 200);
+    if (scenario === 'valid') {
+      assert.equal(result.data.cloudName, 'demo-cloud');
+      assert.equal(result.data.apiKey, 'public-key');
+      assert.equal(result.data.folder, 'dream4deals/products');
+      assert.ok(result.data.signature);
+      assert.equal(JSON.stringify(result.data).includes('private-secret'), false);
+    }
   }
+});
+
+test('Cloudinary cleanup deletes only managed product assets and invalidates the CDN', async () => {
+  const source = fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8');
+  const start = source.indexOf('async function deleteCloudinaryImages(');
+  const end = source.indexOf('async function publicSettings(', start);
+  const calls = [];
+  const context = {
+    process: { env: { CLOUDINARY_CLOUD_NAME: 'demo-cloud', CLOUDINARY_API_KEY: 'public-key', CLOUDINARY_API_SECRET: 'private-secret' } },
+    crypto,
+    URLSearchParams,
+    fetch: async (url, options) => {
+      calls.push({ url, body: Object.fromEntries(options.body.entries()) });
+      return { ok: true, json: async () => ({ result: 'ok' }) };
+    },
+  };
+  await vm.runInNewContext(`${source.slice(start, end)}; deleteCloudinaryImages([
+    'dream4deals/products/managed-image',
+    'external/products/not-managed',
+    'dream4deals/products/managed-image'
+  ])`, context);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, 'https://api.cloudinary.com/v1_1/demo-cloud/image/destroy');
+  assert.equal(calls[0].body.public_id, 'dream4deals/products/managed-image');
+  assert.equal(calls[0].body.invalidate, 'true');
+  assert.equal(JSON.stringify(calls[0]).includes('private-secret'), false);
 });
 
 test('automation API rejects missing placeholders before saving and accepts custom rules', async () => {

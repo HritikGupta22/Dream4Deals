@@ -2,7 +2,7 @@ const pool = require('./db');
 
 async function getCatalogProducts() {
   const products = await pool.query(`
-    SELECT p.id, p.name, p.category, p.price::float AS price, p.image
+    SELECT p.id, p.name, p.category, p.price::float AS price, p.image_url AS image
     FROM products p
     JOIN reels r ON r.id = p.reel_id
     WHERE r.slug <> 'dress-pink-edit'
@@ -49,7 +49,7 @@ async function getReel(slug) {
   const row = reelRes.rows[0];
 
   const prodRes = await pool.query(
-    `SELECT id, name, category, price::float AS price, image
+    `SELECT id, name, category, price::float AS price, image_url AS image
      FROM products WHERE reel_id = $1 ORDER BY created_at`,
     [row.id]
   );
@@ -138,8 +138,8 @@ async function addProduct(slug, { id, name, category, price, image }) {
   if (!reelRes.rows.length) return null;
   const reelId = reelRes.rows[0].id;
   const res = await pool.query(
-    `INSERT INTO products (id, reel_id, name, category, price, image)
-     VALUES ($1,$2,$3,$4,$5,$6) RETURNING id, name, category, price::float AS price, image`,
+    `INSERT INTO products (id, reel_id, name, category, price, image_url)
+     VALUES ($1,$2,$3,$4,$5,$6) RETURNING id, name, category, price::float AS price, image_url AS image`,
     [id, reelId, name, category, price, image]
   );
   return res.rows[0];
@@ -154,9 +154,9 @@ async function updateProduct(slug, productId, { name, category, price, image }) 
        name     = COALESCE(NULLIF($1,''), name),
        category = COALESCE(NULLIF($2,''), category),
        price    = COALESCE(NULLIF($3::text,'')::numeric, price),
-       image    = COALESCE(NULLIF($4,''), image)
+       image_url = COALESCE(NULLIF($4,''), image_url)
      WHERE reel_id=$5 AND id=$6
-     RETURNING id, name, category, price::float AS price, image`,
+     RETURNING id, name, category, price::float AS price, image_url AS image`,
     [name || '', category || '', price != null ? String(price) : '', image || '', reelId, productId]
   );
   return res.rows[0] || null;
@@ -166,10 +166,10 @@ async function deleteProduct(slug, productId) {
   const reelRes = await pool.query('SELECT id FROM reels WHERE slug=$1', [slug]);
   if (!reelRes.rows.length) return false;
   const res = await pool.query(
-    'DELETE FROM products WHERE reel_id=$1 AND id=$2 RETURNING id',
+    'DELETE FROM products WHERE reel_id=$1 AND id=$2 RETURNING id, image_public_id',
     [reelRes.rows[0].id, productId]
   );
-  return res.rowCount > 0;
+  return res.rows[0] || null;
 }
 
 // ── offers ────────────────────────────────────────────────────────────────────

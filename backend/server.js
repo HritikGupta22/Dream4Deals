@@ -1,5 +1,5 @@
 const { fetchRetailerPrice, enrichProducts } = require('./retailer-prices');
-const { automationError, imageExtension } = require('./studio-inputs');
+const { automationError } = require('./studio-inputs');
 require('dotenv').config({ path: require('path').join(__dirname, '.env') });
 
 const http = require('http');
@@ -29,9 +29,7 @@ const { startCommentRecovery } = require('./comment-recovery');
 const { getDashboard, getAnalytics } = store;
 
 const PORT       = Number(process.env.PORT) || 3000;
-const UPLOAD_DIR = path.join(__dirname, 'uploads');
 const STORAGE_DIR = path.join(__dirname, 'storage');
-if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR);
 if (!fs.existsSync(STORAGE_DIR)) fs.mkdirSync(STORAGE_DIR, { recursive: true });
 
 const LOG_FILE = path.join(STORAGE_DIR, 'backend.log');
@@ -203,6 +201,36 @@ async function requireCreator(req, res) {
   return user;
 }
 
+async function deleteCloudinaryImages(publicIds) {
+  const cloudName = String(process.env.CLOUDINARY_CLOUD_NAME || '').trim();
+  const apiKey = String(process.env.CLOUDINARY_API_KEY || '').trim();
+  const apiSecret = String(process.env.CLOUDINARY_API_SECRET || '').trim();
+  const managedIds = [...new Set((publicIds || []).filter(
+    (publicId) => typeof publicId === 'string' && /^dream4deals\/products\/[a-zA-Z0-9_-]+$/.test(publicId)
+  ))];
+  if (!managedIds.length) return;
+  if (!cloudName || !apiKey || !apiSecret) {
+    throw new Error('Cloudinary image deletion is not configured.');
+  }
+  for (const publicId of managedIds) {
+    const timestamp = Math.floor(Date.now() / 1000);
+    const signature = crypto
+      .createHash('sha1')
+      .update(`invalidate=true&public_id=${publicId}&timestamp=${timestamp}${apiSecret}`)
+      .digest('hex');
+    const body = new URLSearchParams({ public_id: publicId, timestamp: String(timestamp), invalidate: 'true', api_key: apiKey, signature });
+    const response = await fetch(`https://api.cloudinary.com/v1_1/${encodeURIComponent(cloudName)}/image/destroy`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body,
+    });
+    const result = await response.json();
+    if (!response.ok || !['ok', 'not found'].includes(result.result)) {
+      throw new Error(result.error?.message || `Cloudinary could not delete ${publicId}.`);
+    }
+  }
+}
+
 async function publicSettings() {
   const settings = await store.getSettings();
   return {
@@ -210,18 +238,6 @@ async function publicSettings() {
     metaConfigured: Boolean(process.env.META_ACCESS_TOKEN && process.env.META_INSTAGRAM_ACCOUNT_ID),
     mappings: await mappingRows(),
   };
-}
-
-function parseMultipart(body, boundary) {
-  const parts = body.toString('binary').split('--' + boundary);
-  for (const part of parts) {
-    const match = part.match(/Content-Disposition:[^\r\n]*filename="([^"]+)"[\s\S]*?\r\n\r\n([\s\S]*)\r\n$/);
-    if (!match) continue;
-    const filename = `${Date.now()}-${match[1].replace(/[^a-zA-Z0-9._-]/g, '_')}`;
-    fs.writeFileSync(path.join(UPLOAD_DIR, filename), Buffer.from(match[2], 'binary'));
-    return filename;
-  }
-  return null;
 }
 
 async function resolveReel(job) {
@@ -447,43 +463,21 @@ http.createServer(async (req, res) => {
       return handleInstagramWebhook(req, res);
 
     // ── File upload ───────────────────────────────────────────────────────────
-    if (req.method === 'POST' && url.pathname === '/api/product-images') {
+    if (req.method === 'POST' && url.pathname === '/api/product-images/signature') {
       if (!await requireCreator(req, res)) return;
-      let body;
-      try { body = await readBody(req, 10 * 1024 * 1024); }
-      catch (error) { return sendJson(res, 413, { error: error.message }); }
-      const extension = imageExtension(body);
-      if (!extension) return sendJson(res, 400, { error: 'Upload a JPG, PNG, GIF or WebP image.' });
-      const filename = `${crypto.randomUUID()}.${extension}`;
-      await fs.promises.writeFile(path.join(UPLOAD_DIR, filename), body);
-      return sendJson(res, 201, { url: `/api/product-images/${filename}` });
-    }
-    if (req.method === 'GET' && url.pathname.startsWith('/api/product-images/')) {
-      const filename = url.pathname.split('/').pop();
-      if (!/^[a-f0-9-]{36}\.(png|jpg|gif|webp)$/.test(filename)) return sendJson(res, 404, { error: 'Image not found.' });
-      const file = path.join(UPLOAD_DIR, filename);
-      if (!fs.existsSync(file)) return sendJson(res, 404, { error: 'Image not found.' });
-      const types = { png: 'image/png', jpg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp' };
-      res.writeHead(200, { 'Content-Type': types[filename.split('.').pop()], 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'public, max-age=31536000, immutable' });
-      return fs.createReadStream(file).pipe(res);
-    }
-    if (req.method === 'POST' && url.pathname === '/api/upload') {
-      if (!await requireCreator(req, res)) return;
-      const body     = await readBody(req);
-      const boundary = (req.headers['content-type'] || '').split('boundary=')[1];
-      if (!boundary) return sendJson(res, 400, { error: 'Missing multipart boundary' });
-      const filename = parseMultipart(body, boundary);
-      if (!filename)  return sendJson(res, 400, { error: 'No file found in upload' });
-      return sendJson(res, 200, {
-        url: `${process.env.PUBLIC_BASE_URL || `http://localhost:${PORT}`}/uploads/${filename}`,
-      });
-    }
-
-    if (req.method === 'GET' && url.pathname.startsWith('/uploads/')) {
-      const file = path.normalize(path.join(UPLOAD_DIR, url.pathname.replace('/uploads/', '')));
-      if (!file.startsWith(UPLOAD_DIR) || !fs.existsSync(file)) return sendJson(res, 404, { error: 'Not found' });
-      res.writeHead(200);
-      return fs.createReadStream(file).pipe(res);
+      const cloudName = String(process.env.CLOUDINARY_CLOUD_NAME || '').trim();
+      const apiKey = String(process.env.CLOUDINARY_API_KEY || '').trim();
+      const apiSecret = String(process.env.CLOUDINARY_API_SECRET || '').trim();
+      if (!cloudName || !apiKey || !apiSecret) {
+        return sendJson(res, 503, { error: 'Cloudinary image uploads are not configured.' });
+      }
+      const timestamp = Math.floor(Date.now() / 1000);
+      const folder = 'dream4deals/products';
+      const signature = crypto
+        .createHash('sha1')
+        .update(`folder=${folder}&timestamp=${timestamp}${apiSecret}`)
+        .digest('hex');
+      return sendJson(res, 200, { cloudName, apiKey, timestamp, folder, signature });
     }
 
     // ── Auth ──────────────────────────────────────────────────────────────────
@@ -797,6 +791,10 @@ http.createServer(async (req, res) => {
         if (!String(product.name || '').trim() || !String(product.imageUrl || '').trim()) {
           return sendJson(res, 400, { error: 'Product name and image URL are required.' });
         }
+        if (product.imagePublicId != null && product.imagePublicId !== '' &&
+            !/^dream4deals\/products\/[a-zA-Z0-9_-]+$/.test(String(product.imagePublicId))) {
+          return sendJson(res, 400, { error: 'Invalid Cloudinary image asset ID.' });
+        }
         if (!Array.isArray(product.sellerLinks) || product.sellerLinks.length === 0) {
           return sendJson(res, 400, { error: 'At least one affiliate link is required per product.' });
         }
@@ -814,7 +812,12 @@ http.createServer(async (req, res) => {
         }
       }
       try {
-        const result = await store.saveProductsForPost(user.id, postId, await enrichProducts(data.products));
+        const saved = await store.saveProductsForPost(user.id, postId, await enrichProducts(data.products));
+        const { removedPublicIds, ...result } = saved;
+        try { await deleteCloudinaryImages(removedPublicIds); }
+        catch (cleanupError) {
+          logError('Cloudinary product image cleanup failed', { message: cleanupError.message, userId: user.id, publicIds: removedPublicIds });
+        }
         await store.logEvent('Products saved', `${result.reelSlug} - ${result.saved} products`);
         return sendJson(res, 201, { ok: true, ...result });
       } catch (e) {
@@ -987,7 +990,12 @@ http.createServer(async (req, res) => {
       const user = await requireCreator(req, res); if (!user) return;
       const parts = url.pathname.split('/');
       const slug = parts[3]; const productId = parts[5];
-      if (!await deleteProduct(slug, productId)) return sendJson(res, 404, { error: 'Reel or product not found.' });
+      const deleted = await deleteProduct(slug, productId);
+      if (!deleted) return sendJson(res, 404, { error: 'Reel or product not found.' });
+      try { await deleteCloudinaryImages([deleted.image_public_id]); }
+      catch (cleanupError) {
+        logError('Cloudinary product image cleanup failed', { message: cleanupError.message, userId: user.id, publicIds: [deleted.image_public_id] });
+      }
       await store.logEvent('Product deleted', `${slug} - ${productId}`);
       return sendJson(res, 200, { ok: true });
     }

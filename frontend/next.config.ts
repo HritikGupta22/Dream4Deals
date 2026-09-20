@@ -30,7 +30,7 @@ const nextConfig: NextConfig = {
           // CSP - restrictive by default
           {
             key: "Content-Security-Policy",
-            value: "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' *.vercel.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; connect-src 'self' localhost:3000 localhost:3001 *.onrender.com *.vercel.app *.ngrok-free.dev *.ngrok.io https://broiler-styling-shucking.ngrok-free.dev",
+            value: "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' *.vercel.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; connect-src 'self' https://api.cloudinary.com localhost:3000 localhost:3001 *.onrender.com *.vercel.app *.ngrok-free.dev *.ngrok.io https://broiler-styling-shucking.ngrok-free.dev",
           },
         ],
       },

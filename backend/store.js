@@ -434,7 +434,7 @@ async function syncInstagramPosts(creatorId, posts) {
 
 async function getCreatorPostProducts(postId) {
   const res = await pool.query(
-    `SELECT p.id, p.name, COALESCE(NULLIF(p.image_url, ''), p.image) AS image_url, p.created_at
+    `SELECT p.id, p.name, p.image_url, p.image_public_id, p.created_at
      FROM products p
      WHERE p.creator_post_id=$1
      ORDER BY p.created_at DESC`,
@@ -458,6 +458,7 @@ async function getCreatorPostProducts(postId) {
     id: product.id,
     name: product.name,
     imageUrl: product.image_url,
+    imagePublicId: product.image_public_id || null,
     sellerLinks: linksByProduct.get(product.id) || [],
   }));
 }
@@ -491,10 +492,14 @@ async function saveProductsForPost(creatorId, postId, products) {
     }
 
     const existing = await client.query(
-      'SELECT id FROM products WHERE creator_post_id=$1',
+      'SELECT id, image_public_id FROM products WHERE creator_post_id=$1',
       [postId]
     );
     const existingIds = existing.rows.map((product) => product.id);
+    const retainedPublicIds = new Set(products.map((product) => product.imagePublicId).filter(Boolean));
+    const removedPublicIds = existing.rows
+      .map((product) => product.image_public_id)
+      .filter((publicId) => publicId && !retainedPublicIds.has(publicId));
     if (existingIds.length) {
       await client.query('DELETE FROM seller_links WHERE product_id = ANY($1::text[])', [existingIds]);
     }
@@ -507,9 +512,9 @@ async function saveProductsForPost(creatorId, postId, products) {
       const startingPrice = prices.length ? Math.min(...prices) : 0;
 
       await client.query(
-        `INSERT INTO products (id, reel_id, name, category, price, image, creator_id, creator_post_id, image_url)
-         VALUES ($1, $2, $3, 'uncategorized', $7, $4, $5, $6, $4)`,
-        [productId, reel.id, product.name.trim(), product.imageUrl.trim(), creatorId, postId, startingPrice]
+        `INSERT INTO products (id, reel_id, name, category, price, image_url, image_public_id, creator_id, creator_post_id)
+         VALUES ($1, $2, $3, 'uncategorized', $8, $4, $5, $6, $7)`,
+        [productId, reel.id, product.name.trim(), product.imageUrl.trim(), product.imagePublicId || null, creatorId, postId, startingPrice]
       );
 
       // Insert seller links
@@ -522,7 +527,7 @@ async function saveProductsForPost(creatorId, postId, products) {
       }
     }
     await client.query('COMMIT');
-    return { reelSlug: reel.slug, saved: products.length };
+    return { reelSlug: reel.slug, saved: products.length, removedPublicIds };
   } catch (error) {
     await client.query('ROLLBACK');
     throw error;
